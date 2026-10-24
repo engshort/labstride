@@ -4,13 +4,15 @@ import { lstatSync } from 'node:fs';
 import { assertPrivateDatabase } from '../target-helper/filesystem.ts';
 import { validated } from '../storage-sqlite/validation.ts';
 import { verifySchema } from '../storage-sqlite/migrations.ts';
+import { assertNoMaintenance } from '../storage-sqlite/maintenance.ts';
 import { CleanupStore } from '../storage-sqlite/cleanup.ts';
 import { inspectExtension } from '../extensions/loader.ts';
-import { isPublic } from './installation.ts';
+import { isPublic, installationHost } from './installation.ts';
 import type { Installation } from './installation.ts';
 import type { ManagedSessionStartV1 } from '../../contracts/generated/managed-session-start.ts';
 
 export function readStatus(directory: string, installationId?: string) {
+  assertNoMaintenance(directory);
   assertPrivateDatabase(directory, 'state.sqlite');
   lstatSync(join(directory, 'state.sqlite')); // Keep ENOENT distinct; do not create a DB.
   const db = new DatabaseSync(join(directory, 'state.sqlite'), { readOnly: true });
@@ -32,7 +34,9 @@ export function readStatus(directory: string, installationId?: string) {
         lastError: typeof value.lastError === 'string' && /^[a-z_]{1,100}$/.test(value.lastError) ? value.lastError : value.lastError === null ? null : 'provider_unavailable' };
     });
     return { schemaVersion: '1.0' as const,
-      recovery: { schemaVersion: '1.0' as const, paused: !!recovery.paused, epoch: Number(recovery.epoch), unresolved: db.prepare('SELECT operation_id FROM restore_checks WHERE resolved=0 ORDER BY operation_id').all().map(row => String(row.operation_id)) },
+      recovery: { schemaVersion: '1.0' as const, paused: !!recovery.paused, epoch: Number(recovery.epoch), unresolved: db.prepare('SELECT operation_id FROM restore_checks WHERE resolved=0 ORDER BY operation_id').all().map(row => String(row.operation_id)),
+        unresolvedSessions: db.prepare("SELECT id FROM restore_observation_checks WHERE kind='session' AND resolved=0 ORDER BY id").all().map(row => String(row.id)),
+        unresolvedProjections: db.prepare("SELECT id FROM restore_observation_checks WHERE kind='projection' AND resolved=0 ORDER BY id").all().map(row => String(row.id)) },
       projections: { pending: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state IN ('pending','reconcile')"),
         blocked: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state='blocked'"),
         conflict: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state='conflict'") },
@@ -55,7 +59,7 @@ export function configurationView(spec: Installation) {
 export function extensionView(spec: Installation) {
   return validated('extension-inspection', { schemaVersion: '1.0' as const, extensions: spec.lock.extensions.map(pin => {
     let code = 'extension_verified';
-    try { inspectExtension(pin, spec.host); }
+    try { inspectExtension(pin, installationHost(spec)); }
     catch (error) { const value = (error as { code?: string }).code; code = ['integrity_mismatch','artifact_unavailable','identity_mismatch','unsupported_capability','forbidden','validation_failed','configuration_invalid'].includes(value ?? '') ? value! : 'operation_failed'; }
     return { id: pin.id, version: pin.version, kind: pin.kind, integrity: pin.integrity, capabilities: pin.capabilities,
       permissions: pin.permissions, ok: code === 'extension_verified', code };

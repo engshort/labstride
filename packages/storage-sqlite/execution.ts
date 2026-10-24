@@ -1,6 +1,7 @@
 import { canonical, digest } from '../configuration/json.ts';
 export { canonical, digest } from '../configuration/json.ts';
 import { PolicyStore } from './policy.ts';
+import { fenceRecovery } from './recovery.ts';
 import { controlContext } from './scheduling.ts';
 import { validated } from './validation.ts';
 import { LifecycleError } from '../core/lifecycle.ts';
@@ -518,23 +519,22 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
   enterRestore(context: AuditContext): void {
     context = recoveryContext(context);
     this.transaction(() => {
-      this.db.exec('UPDATE recovery_control SET paused=1,epoch=epoch+1 WHERE id=1');
-      this.db.exec(`INSERT INTO restore_checks SELECT id,(SELECT epoch FROM recovery_control WHERE id=1),0 FROM operations WHERE true
-        ON CONFLICT(operation_id) DO UPDATE SET epoch=excluded.epoch,resolved=0`);
-      this.db.prepare("UPDATE deliveries SET state='reconcile',attempts=0,next_at=?,revision=revision+1 WHERE operation_id IS NOT NULL AND state!='conflict'").run(this.clock.now());
-      this.log(null, 'restore_paused', context);
+      fenceRecovery(this.db, this.clock.now(), context);
     });
   }
   resumeAfterRestore(context: AuditContext): void {
     context = recoveryContext(context);
     this.transaction(() => {
       if (this.db.prepare('SELECT 1 FROM restore_checks WHERE resolved=0').get()) throw new LifecycleError('recovery_required');
+      if (this.db.prepare('SELECT 1 FROM restore_observation_checks WHERE resolved=0').get()) throw new LifecycleError('recovery_required');
       this.db.exec('UPDATE recovery_control SET paused=0 WHERE id=1'); this.log(null, 'restore_resumed', context);
     });
   }
   recoveryStatus() {
     const row = this.db.prepare('SELECT paused,epoch FROM recovery_control WHERE id=1').get()!;
     return validated('recovery-status', { schemaVersion: '1.0' as const, paused: !!row.paused, epoch: Number(row.epoch),
-      unresolved: this.db.prepare('SELECT operation_id FROM restore_checks WHERE resolved=0 ORDER BY operation_id').all().map(row => String(row.operation_id)) });
+      unresolved: this.db.prepare('SELECT operation_id FROM restore_checks WHERE resolved=0 ORDER BY operation_id').all().map(row => String(row.operation_id)),
+      unresolvedSessions: this.db.prepare("SELECT id FROM restore_observation_checks WHERE kind='session' AND resolved=0 ORDER BY id").all().map(row => String(row.id)),
+      unresolvedProjections: this.db.prepare("SELECT id FROM restore_observation_checks WHERE kind='projection' AND resolved=0 ORDER BY id").all().map(row => String(row.id)) });
   }
 }

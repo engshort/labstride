@@ -153,6 +153,9 @@ export class SessionStore extends ObservationStore {
           }
         }
         session = this.get('session', command.enrollmentId);
+        if (this.recoveryStatus().paused) {
+          this.db.prepare("INSERT OR IGNORE INTO restore_observation_checks VALUES ('session',?,?,0)").run(session.id, this.recoveryEpoch());
+        }
         if (session.state !== 'closed' && session.state !== 'failed') {
           this.db.prepare('INSERT OR IGNORE INTO session_polls(session_record_id,next_at) VALUES (?,?)').run(session.id, this.clock.now());
           const poll = this.db.prepare('SELECT revision,next_at,attempts,blocked FROM session_polls WHERE session_record_id=?').get(session.id)!;

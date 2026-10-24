@@ -287,17 +287,34 @@ export const migrations: readonly Migration[] = [{ version: 1, sql: `
   CREATE TRIGGER cleanup_authorization_immutable BEFORE UPDATE OF authorization ON cleanup_executions WHEN OLD.authorization IS NOT NULL BEGIN SELECT RAISE(ABORT,'immutable_cleanup_authorization'); END;
   CREATE TRIGGER cleanup_execution_retained BEFORE DELETE ON cleanup_executions BEGIN SELECT RAISE(ABORT,'immutable_cleanup_execution'); END;
   CREATE TRIGGER cleanup_execution_complete BEFORE UPDATE ON cleanup_executions WHEN OLD.stage='deleted' BEGIN SELECT RAISE(ABORT,'immutable_cleanup_execution'); END;
+` }, { version: 20, sql: `
+  CREATE TABLE restore_observation_checks (
+    kind TEXT NOT NULL CHECK(kind IN ('session','projection')), id TEXT NOT NULL,
+    epoch INTEGER NOT NULL, resolved INTEGER NOT NULL CHECK(resolved IN (0,1)), PRIMARY KEY(kind,id));
+  INSERT INTO restore_observation_checks SELECT 'session',s.id,(SELECT epoch FROM recovery_control),0 FROM sessions s
+    WHERE (SELECT paused FROM recovery_control)=1 AND NOT EXISTS
+      (SELECT 1 FROM session_bindings b WHERE b.enrollment_id=s.id AND json_extract(b.payload,'$.status')='detached');
+  INSERT INTO restore_observation_checks SELECT 'projection',projection_id,(SELECT epoch FROM recovery_control),0 FROM deliveries
+    WHERE projection_id IS NOT NULL AND state IN ('pending','reconcile','blocked','conflict') AND (SELECT paused FROM recovery_control)=1;
 ` }];
 
 export function verifySchema(db: DatabaseSync): void {
+  if (Number(db.prepare('PRAGMA user_version').get()!.user_version) !== migrations.length) throw new LifecycleError('unsupported_schema');
+  if (verifySchemaHistory(db) !== migrations.length) throw new LifecycleError('unsupported_schema');
+}
+
+// Accept only an exact immutable prefix, never an arbitrary older layout.
+export function verifySchemaHistory(db: DatabaseSync): number {
   const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
-  if (version !== migrations.length) throw new LifecycleError('unsupported_schema');
+  if (version < 1 || version > migrations.length) throw new LifecycleError('unsupported_schema');
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()) throw new LifecycleError('unsupported_schema');
   const applied = db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all();
   if (applied.length !== version || applied.some((row, index) => Number(row.version) !== index + 1 ||
     row.checksum !== createHash('sha256').update(migrations[index].sql).digest('hex'))) throw new LifecycleError('unsupported_schema');
+  return version;
 }
 
-export function migrate(db: DatabaseSync, steps: readonly Migration[] = migrations): void {
+export function migrate(db: DatabaseSync, steps: readonly Migration[] = migrations, beforeCommit?: () => void): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
@@ -324,6 +341,7 @@ export function migrate(db: DatabaseSync, steps: readonly Migration[] = migratio
         db.exec(`PRAGMA user_version=${step.version}`);
       }
     }
+    beforeCommit?.();
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

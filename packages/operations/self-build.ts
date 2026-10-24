@@ -1,3 +1,4 @@
+import { installationHost } from './installation.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ActionAdapter, BoundResult } from '../core/execution.ts';
@@ -260,10 +261,10 @@ export function configuredSelfBuildAction(store: WorkflowStore, spec: Operationa
   async function resolve(op: Operation) {
     const snapshot = store.runConfiguration(op.runId), pin = snapshot?.extensionLock.extensions.find(pin => pin.id === 'labstride.self-build' && pin.version === op.actionVersion);
     if (!snapshot || !pin || snapshot.digest !== op.configDigest) throw Error('identity_mismatch');
-    inspectExtension(pin, spec.host); // Recheck original bytes even after caching.
+    inspectExtension(pin, installationHost(spec)); // Recheck original bytes even after caching.
     const key = digest([op.runId, pin]);
     if (!instances.has(key)) instances.set(key, (async () => {
-      const loaded = await loadExtension(freezeProfile(op.runId, snapshot.digest, pin, spec.host), spec.host, {
+      const loaded = await loadExtension(freezeProfile(op.runId, snapshot.digest, pin, installationHost(spec)), installationHost(spec), {
         selfBuild: (options: Options) => createSelfBuildAction(store, options, github.withConfiguration(snapshot.configuration), client,
           new GitHubRest(rest.credential, snapshot.configuration.github.credentialRef, rest.transport)),
       });

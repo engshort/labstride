@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fork } from 'node:child_process';
@@ -15,6 +15,7 @@ import { provider } from './helpers/observation-fixture.mjs';
 import { checkInstallation } from '../packages/operations/diagnostics.ts';
 import { readStatus } from '../packages/operations/inspection.ts';
 import { openOperationalRuntime } from '../packages/operations/runtime.ts';
+import { createBackupBundle, restoreBundle } from '../packages/operations/recovery.ts';
 import { probeReady, saveProbe } from '../packages/operations/runner-probe.ts';
 import { cli } from '../apps/cli/main.ts';
 import { startExecution } from '../apps/coordinator/runtime.ts';
@@ -23,6 +24,24 @@ import { actionKey } from '../packages/core/worker.ts';
 import { context, localAuthority } from './helpers/configuration-fixture.mjs';
 
 const oldUmask = process.umask(0o077); process.on('exit', () => process.umask(oldUmask));
+test('public bundle restore retains frozen configuration and original broker receipt identity with retained artifact bytes', async t => {
+  const f = await publicRecoveryFixture(t, { fence: false }), bundle = join(f.root, 'complete-backup');
+  await createBackupBundle(f.spec, bundle);
+  f.spec.stateDirectory = join(f.root, 'restored'); mkdirSync(f.spec.stateDirectory, { mode: 0o700 }); f.write();
+  await restoreBundle(f.spec, bundle);
+  for (const pin of f.spec.lock.extensions) renameSync(pin.artifactPath, pin.artifactPath + '.unavailable');
+  const runtime = await f.open();
+  assert.equal(runtime.store.runConfiguration(f.op.runId).digest, f.original.digest);
+  assert.deepEqual(runtime.store.workflowClaim(f.op.operationId), f.original.claim);
+  assert.equal((await f.post('claim', f.message)).status, 403);
+  assert.equal((await f.post('receipt', f.receipt)).status, 200);
+  f.complete(); t.mock.timers.tick(16000); await runtime.tick();
+  assert.equal(runtime.store.get('operation', f.op.operationId).state, 'succeeded');
+  assert.deepEqual(runtime.store.recoveryStatus().unresolved, []);
+  assert.equal(f.dispatches(), 1); assert.equal(f.methods.filter(method => method === 'create').length, 1);
+  await f.close(); await cli(['recovery','resume','--config',f.path], () => {});
+  assert.equal(readStatus(f.spec.stateDirectory).recovery.paused, false);
+});
 for (const evidence of ['missing','expired','corrupt','future','mismatched']) test(`fenced installed restart with ${evidence} runner proof retains authenticated receipts and independent recovery`, async t => {
   const f = await publicRecoveryFixture(t), proof = join(f.spec.stateDirectory, 'runner-probe.json');
   if (evidence === 'missing') unlinkSync(proof);

@@ -19,17 +19,18 @@ export interface ProjectionAdapter {
   write(projection: RecordOf<'projection'>, token: string): Promise<ProjectionView>;
 }
 export interface ObservationPort {
+  recoveryEpoch(): number;
   projectionAllowed(runId: string): boolean;
   get<K extends import('./lifecycle.ts').Kind>(kind: K, id: string): RecordOf<K>;
   receiveHook(enrollmentId: string, hook: Hook): import('../../contracts/generated/hook-ack.ts').LabstrideHookAcknowledgement;
   bootObservations(): void;
   dueSessions(): SessionPoll[];
-  applySession(poll: SessionPoll, expectedRevision: number, observation: SessionObservation, intervalMs: number, projections?: RecordOf<'projection'>[]): void;
+  applySession(poll: SessionPoll, expectedRevision: number, observation: SessionObservation, intervalMs: number, projections?: RecordOf<'projection'>[], observedEpoch?: number): void;
   retrySession(poll: SessionPoll, policy: RetryPolicy, random: number): void;
   dueProjections(): Delivery[];
   delivery(id: string): Delivery;
   projectionToken(id: string): string | null;
-  inspectProjection(id: string, expectedRevision: number, view: ProjectionView): 'write' | 'wait' | 'finished';
+  inspectProjection(id: string, expectedRevision: number, view: ProjectionView, observedEpoch?: number): 'write' | 'wait' | 'finished';
   beginProjection(id: string, expectedRevision: number, view: ProjectionView, mode?: 'atomic'|'checked'): string;
   acknowledgeProjection(id: string, token: string, view: ProjectionView): void;
   projectionNotApplied(id: string, token: string): void;

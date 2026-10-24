@@ -115,7 +115,7 @@
       "Complete W00.1's runtime handoff through Doctor diagnostics for missing capabilities, invalid cursors, expired credentials and unknown outcomes; verify AC29 using the owning GitHub/broker/host slices.",
       "Package the CLI and single service together; diagnose optional hook/session compatibility without a hosting/control-panel dependency.",
       "Apply W00.3's capability matrix: diagnose hooks-disabled, missing/untrusted hooks and unsupported atomic guards. Support W01.4 / #17's session-provider enablement/continuity gates operationally; manual client verification and fixture success do not pass AC31/AC35/AC36.",
-      "Bounded local issue-to-review implementation; deployment, complete restoration/upgrade and full acceptance remain open. See 37-local-self-build.md."
+      "Bounded local issue-to-review and backup/restore/upgrade implementation; installed/live qualification and native self-build recovery remain open. See 37-local-self-build.md and 41-backup-and-upgrade.md."
     ],
     "first_verifiable_outcome": "A fresh operator can diagnose and recover a run without editing database rows.",
     "status": "in_progress",

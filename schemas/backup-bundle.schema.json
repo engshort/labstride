@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Installation backup bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "installationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "databaseVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "databaseSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "installationId",
+    "databaseVersion",
+    "databaseSha256",
+    "artifacts"
+  ]
+}

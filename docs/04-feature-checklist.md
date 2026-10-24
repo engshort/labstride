@@ -576,13 +576,13 @@ Implementation issue: [#30](https://github.com/alex-engvall/labstride/issues/30)
 
 | Phase | Priority | Status | Work package |
 | --- | --- | --- | --- |
-| MVP | P0 | in_progress | W06 |
+| MVP | P0 | implemented | W06 |
 
 Specification: [16-operations-and-cli.md](16-operations-and-cli.md).
 
 - Restored state reconciles live external effects before resuming; no stale outbox is blindly replayed.
 
-Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md
+Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W06.2-backup-upgrade-2026-10-24.md
 
 Implementation issue: [#31](https://github.com/alex-engvall/labstride/issues/31).
 
@@ -590,13 +590,13 @@ Implementation issue: [#31](https://github.com/alex-engvall/labstride/issues/31)
 
 | Phase | Priority | Status | Work package |
 | --- | --- | --- | --- |
-| MVP | P0 | planned | W06 |
+| MVP | P0 | implemented | W06 |
 
 Specification: [13-pilot-and-release.md](13-pilot-and-release.md).
 
 - Pinned versions required by active operations survive upgrade, and migration failure leaves recoverable state.
 
-Verification evidence: None; not implemented.
+Verification evidence: evidence/W06.2-backup-upgrade-2026-10-24.md
 
 Implementation issue: [#31](https://github.com/alex-engvall/labstride/issues/31).
 

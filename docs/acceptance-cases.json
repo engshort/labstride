@@ -312,7 +312,8 @@
       "status": "not_run",
       "evidence": [
         "evidence/W01.2-effects-2026-10-21.md",
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.2-backup-upgrade-2026-10-24.md"
       ]
     },
     {
@@ -397,7 +398,8 @@
       "expected": "Recoverable DB/version state and handles remain available.",
       "status": "not_run",
       "evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.2-backup-upgrade-2026-10-24.md"
       ]
     },
     {

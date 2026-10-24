@@ -30,3 +30,5 @@ Use semantic versions for packages and schema/protocol versions separately. Firs
 Drain or pause new effects, back up SQLite with a consistent backup procedure, keep old extension versions needed by active runs, and apply schema migrations transactionally where possible. Restoration must reconcile provider/target state before effects resume. Do not roll a database back and blindly replay its older outbox.
 
 Application rollback belongs to the deploy recipe. Not every database migration is reversible. Report restore/forward-fix requirements explicitly rather than promising universal rollback.
+
+[W06.2 backup and upgrade](41-backup-and-upgrade.md) implements complete SQLite/artifact bundles, fresh-directory restore and the explicit `upgrade --backup` database command. A maintenance marker prevents interrupted publication from activating; migrations and the recovery fence commit atomically. [Local evidence](evidence/W06.2-backup-upgrade-2026-10-24.md) does not pass installed/live AC21/AC27 or native self-build recovery qualification. Release installation remains operator-managed.

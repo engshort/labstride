@@ -18,9 +18,10 @@ import { publishRunSummary } from './summary.ts';
 import { GitHubWorkflowProvider } from '../provider-github/workflows.ts';
 import { GitHubMergeProvider } from '../provider-github/merges.ts';
 import { readStatus } from './inspection.ts';
+import { assertNoMaintenance } from '../storage-sqlite/maintenance.ts';
 
 export { loadInstallation, installationShape, installationDependencies, verifyRootMapping } from './installation.ts';
-import { isPublic } from './installation.ts';
+import { isPublic, installationHost } from './installation.ts';
 import type { Installation } from './installation.ts';
 import { checkInstallation } from './diagnostics.ts';
 import { runnerDiagnostics, probeReady } from './runner-probe.ts';
@@ -39,7 +40,7 @@ export async function openOperationalRuntime(spec: Installation, options: Parame
   if (mode === 'normal') {
     initializePrivateState(spec.stateDirectory);
     const runtime = startExecution(spec.stateDirectory, { actions: { executorId: `service:${spec.configuration.installationId}`, nextAttempt: randomUUID, adapters: new Map() },
-      observations: { sessions: new Map(), projections: new Map() }, installedTargets: { host: spec.host }, dependencies: { policyAuthority: authority, localWorkspaceRoots: isPublic(spec) ? [] : [spec.sourceRoot] } });
+      observations: { sessions: new Map(), projections: new Map() }, installedTargets: { host: installationHost(spec) }, dependencies: { policyAuthority: authority, localWorkspaceRoots: isPublic(spec) ? [] : [spec.sourceRoot] } });
     try {
       runtime.store.activateOperationalProfile(checked.compiled, spec.policy, authority, audit);
       await runtime.close();
@@ -51,16 +52,16 @@ export async function openOperationalRuntime(spec: Installation, options: Parame
     serialized: true, mode,
     additionalActions: !isPublic(spec) ? store => new Map([[actionKey('labstride.self-build', '0.1.0'), configuredSelfBuildAction(store, spec, checked.adapter as GitHubIssueFieldsAdapter, checked.client, checked.rest)]]) : undefined,
     observations: { sessions: new Map(), projections: new Map() },
-    installedTargets: { host: spec.host }, github: { compiled: checked.compiled, adapter: checked.adapter, buildPlan: (steps, observed) => workspaceStart(checked.compiled, steps, observed) },
-    workflowBroker: spec.brokerListener ? { host: spec.host, port: spec.brokerListener.port, provider: new GitHubWorkflowProvider(checked.credential, options.transport),
+    installedTargets: { host: installationHost(spec) }, github: { compiled: checked.compiled, adapter: checked.adapter, buildPlan: (steps, observed) => workspaceStart(checked.compiled, steps, observed) },
+    workflowBroker: spec.brokerListener ? { host: installationHost(spec), port: spec.brokerListener.port, provider: new GitHubWorkflowProvider(checked.credential, options.transport),
       diagnostics: runnerDiagnostics(spec), allowEffects: isPublic(spec) ? () => probeReady(spec) : undefined } : undefined,
-    githubMerge: spec.mergeEnabled ? { host: spec.host, provider: new GitHubMergeProvider({ credential: checked.credential, fetch: options.transport,
+    githubMerge: spec.mergeEnabled ? { host: installationHost(spec), provider: new GitHubMergeProvider({ credential: checked.credential, fetch: options.transport,
       identity(reference) {
         const binding = spec.credentials[reference];
         if (!binding || typeof binding === 'string' || binding.permissions.contents !== 'write') return null;
         return { appId: Number(binding.appId), installationId: binding.installationId, repositoryIds: binding.repositoryIds, contents: 'write' };
       } }) } : undefined,
-    cleanup: spec.configuration.cleanup ? { host:spec.host,
+    cleanup: spec.configuration.cleanup ? { host:installationHost(spec),
       async keepItem(context) {
         const snapshot=execution.store.runConfiguration(context.run.id)!;
         const adapter=checked.adapter.withConfiguration(snapshot.configuration);
@@ -80,7 +81,7 @@ export async function openOperationalRuntime(spec: Installation, options: Parame
   const store = execution.store;
   return { ...execution, authority,
     async tick() {
-      if (mode === 'normal') store.advanceWorkflows(spec.host);
+      if (mode === 'normal') store.advanceWorkflows(installationHost(spec));
       await execution.tick(); await execution.drain();
       if (isPublic(spec)) return;
       for (const run of store.runs()) {
@@ -106,6 +107,7 @@ export async function openOperationalRuntime(spec: Installation, options: Parame
 }
 
 export function inspectDatabase(directory: string) {
+  assertNoMaintenance(directory);
   assertPrivateDatabase(directory, 'state.sqlite');
   const db = new DatabaseSync(join(directory, 'state.sqlite'), { readOnly: true });
   try { return { schemaVersion: Number(db.prepare('PRAGMA user_version').get()!.user_version), expectedSchemaVersion: migrations.length,
@@ -113,6 +115,7 @@ export function inspectDatabase(directory: string) {
   finally { db.close(); }
 }
 export async function backupDatabase(directory: string, destination: string) {
+  assertNoMaintenance(directory);
   assertPrivateDatabase(directory, 'state.sqlite');
   try { lstatSync(destination); throw Error('backup_exists'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   protectedPath(dirname(destination));
@@ -132,6 +135,7 @@ export async function openDiagnosticsOnly(spec: Installation) {
 }
 
 export function initializePrivateState(directory: string): void {
+  assertNoMaintenance(directory);
   assertPrivateDatabase(directory, 'state.sqlite');
   try { writeFileSync(join(directory, 'state.sqlite'), '', { flag: 'wx', mode: 0o600 }); }
   catch (error) {

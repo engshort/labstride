@@ -966,7 +966,7 @@
       "title": "Back up and restore consistently",
       "phase": "MVP",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "implemented",
       "owner_role": "maintainer",
       "work_package": "W06",
       "depends_on_work_packages": [
@@ -980,7 +980,8 @@
       ],
       "implementation_pr": "https://github.com/engshort/labstride/pull/65",
       "verification_evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.2-backup-upgrade-2026-10-24.md"
       ],
       "github_issue": 31,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/31"
@@ -990,7 +991,7 @@
       "title": "Upgrade while preserving active handles",
       "phase": "MVP",
       "priority": "P0",
-      "status": "planned",
+      "status": "implemented",
       "owner_role": "maintainer",
       "work_package": "W06",
       "depends_on_work_packages": [
@@ -1003,7 +1004,9 @@
         "Pinned versions required by active operations survive upgrade, and migration failure leaves recoverable state."
       ],
       "implementation_pr": null,
-      "verification_evidence": [],
+      "verification_evidence": [
+        "evidence/W06.2-backup-upgrade-2026-10-24.md"
+      ],
       "github_issue": 31,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/31"
     },

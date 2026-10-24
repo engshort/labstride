@@ -76,3 +76,4 @@ Keep the current specification coherent. Do not append contradictory historical 
 - [Current-revision direct merge and recovery](39-current-revision-merge.md)
 
 - [Prepared-host public installation and operator controls](40-public-installation.md)
+- [Backup, restore and explicit database upgrade](41-backup-and-upgrade.md)

@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { startCoordinator } from '../apps/coordinator/main.ts';
 import { createWorker, actionKey, PreEffectTransient } from '../packages/core/worker.ts';
 import { seed, schedule, startPlan, context } from './helpers/execution-fixture.mjs';
+import { observeRestoreProjections } from './helpers/observation-fixture.mjs';
 const fail = code => e => e.code === code;
 const message = async child => (await once(child, 'message', { signal: AbortSignal.timeout(10000) }))[0];
 function fixture(t, dependencies = {}, scheduled = true) {
@@ -106,6 +107,7 @@ test('restore of an older consistent database observes the external effect befor
   assert.throws(() => runtime.store.claim(plan.operation.id, 'new','new'), fail('effect_blocked'));
   assert.throws(() => runtime.store.resumeAfterRestore(context), fail('recovery_required'));
   const second = await run(t, 'normal', restored, receiver.url); assert.equal((await second.reply).state, 'succeeded'); await second.p.exited;
+  await observeRestoreProjections(runtime.store, join(root, 'restore-provider'));
   runtime.store.resumeAfterRestore(context); assert.equal(receiver.calls(), 1);
 });
 test('conflicting resource claims remain locked until evidence, with monotonically increasing fences', async t => {
@@ -176,14 +178,15 @@ test('concurrent distinct executor processes receive one authorized claim', asyn
   assert.equal(store.get('operation',plan.operation.id).state,'claimed');
   assert.equal(store.executionHistory(plan.operation.id).filter(r=>r.kind==='claim').length,1);
 });
-test('restore requires a fresh observation epoch; delayed receipts cannot clear its gate', t => {
-  const { store,plan } = fixture(t); const claim=store.claim(plan.operation.id,'one','one');store.beginEffect(claim);
+test('restore requires a fresh observation epoch; delayed receipts cannot clear its gate', async t => {
+  const { store,plan,root } = fixture(t); const claim=store.claim(plan.operation.id,'one','one');store.beginEffect(claim);
   const result=bound(plan);store.acceptResult(result,claim,1);const priorEpoch=store.recoveryEpoch();
   store.enterRestore(context);
   store.acceptResult(result,claim,1);
   assert.throws(()=>store.resumeAfterRestore(context),fail('recovery_required'));
   assert.throws(()=>store.acceptResult(result,null,store.get('operation',plan.operation.id).revision,[],priorEpoch),fail('revision_conflict'));
   store.acceptResult(result,null,store.get('operation',plan.operation.id).revision,[],store.recoveryEpoch());
+  await observeRestoreProjections(store, join(root, 'restore-provider'));
   store.resumeAfterRestore(context);
 });
 test('the full bounded resource result commits atomically across lifecycle write batches', t => {

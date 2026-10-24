@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Installation maintenance result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "code": {
+      "enum": [
+        "backup_bundle_created",
+        "restore_completed",
+        "upgrade_completed"
+      ]
+    },
+    "databaseVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reconciliationRequired": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "code",
+    "databaseVersion",
+    "reconciliationRequired"
+  ]
+}

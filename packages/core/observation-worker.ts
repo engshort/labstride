@@ -28,19 +28,21 @@ export function createObservationWorker(store: ObservationPort, options: Observa
       if (ticking) return; ticking = true;
       try {
         for (const poll of store.dueSessions()) {
+          const observedEpoch = store.recoveryEpoch();
           const session = store.get('session', poll.sessionId), adapter = sessions.get(session.providerId);
           if (!adapter) { store.retrySession(poll, policy, random()); continue; }
           try {
             const observation = await adapter.observe(structuredClone(session));
-            store.applySession(poll, session.revision, observation, interval, options.sessionProjections?.(session, observation));
+            store.applySession(poll, session.revision, observation, interval, options.sessionProjections?.(session, observation), observedEpoch);
           } catch { store.retrySession(poll, policy, random()); }
         }
         for (const delivery of store.dueProjections()) {
+          const observedEpoch = store.recoveryEpoch();
           const id = delivery.projectionId!, projection = store.get('projection', id), adapter = projections.get(projection.providerId);
           if (!adapter) { store.block(delivery.id, 'unsupported_capability'); continue; }
           try {
             const view = await adapter.read(structuredClone(projection), store.projectionToken(id));
-            const decision = store.inspectProjection(id, delivery.revision, view);
+            const decision = store.inspectProjection(id, delivery.revision, view, observedEpoch);
             if (decision === 'finished') continue;
             if (decision === 'wait') { if (store.projectionAllowed(projection.runId)) store.retryRead(delivery.id, policy, random()); continue; }
             if (options.mode === 'reconcile-only') continue;
@@ -60,7 +62,7 @@ export function createObservationWorker(store: ObservationPort, options: Observa
             }
             // Read failures after a returned write can never establish a pre-effect failure.
             const observed = await adapter.read(structuredClone(projection), token);
-            if (store.inspectProjection(id, store.delivery(delivery.id).revision, observed) === 'wait')
+            if (store.inspectProjection(id, store.delivery(delivery.id).revision, observed, observedEpoch) === 'wait')
               store.retryRead(delivery.id, policy, random());
           } catch (error) {
             if (error instanceof LifecycleError && ['revision_conflict','effect_blocked'].includes(error.code)) continue;

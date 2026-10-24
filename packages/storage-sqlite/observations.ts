@@ -44,13 +44,16 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
   }
   dueSessions(): SessionPoll[] {
     this.db.prepare('INSERT OR IGNORE INTO session_polls(session_record_id,next_at) SELECT id,? FROM sessions').run(this.clock.now());
-    return this.db.prepare('SELECT * FROM session_polls WHERE blocked=0 AND next_at<=? ORDER BY rowid LIMIT 64').all(this.clock.now())
+    return this.db.prepare(`SELECT * FROM session_polls WHERE (blocked=0 OR EXISTS
+      (SELECT 1 FROM restore_observation_checks c WHERE c.kind='session' AND c.id=session_polls.session_record_id AND c.resolved=0))
+      AND next_at<=? ORDER BY rowid LIMIT 64`).all(this.clock.now())
       .map(row => ({ sessionId: String(row.session_record_id), revision: Number(row.revision), nextAt: String(row.next_at), attempts: Number(row.attempts), blocked: !!row.blocked }));
   }
-  applySession(poll: SessionPoll, expectedRevision: number, input: SessionObservation, intervalMs: number, projections: RecordOf<'projection'>[] = []): void {
+  applySession(poll: SessionPoll, expectedRevision: number, input: SessionObservation, intervalMs: number, projections: RecordOf<'projection'>[] = [], observedEpoch?: number): void {
     const observation = validated('session-observation', input);
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000 || intervalMs > 86400000) throw new LifecycleError('invalid_payload');
     this.transaction(() => {
+      if (observedEpoch !== undefined && observedEpoch !== this.recoveryEpoch()) throw new LifecycleError('revision_conflict');
       const queued = this.db.prepare('SELECT revision FROM session_polls WHERE session_record_id=?').get(poll.sessionId);
       const session = this.get('session', poll.sessionId);
       if (!queued || queued.revision !== poll.revision || session.revision !== expectedRevision) throw new LifecycleError('revision_conflict');
@@ -71,7 +74,7 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
         sourceVersion: digest(observation), facts: { ...observation },
       } }));
       this.db.prepare('UPDATE inbox SET processed=1,run_id=? WHERE id=? OR session_record_id=?').run(session.runId, received.id, session.id);
-      if (projections.length) {
+      if (projections.length && !this.recoveryStatus().paused) {
         if (projections.some(p => p.kind !== 'projection' || p.runId !== session.runId)) throw new LifecycleError('identity_conflict');
         this.write(projections.map(record => ({ record, expectedRevision: null })), { actorId: session.providerId, reason: 'Session progress projection', evidenceRefs: observation.evidenceRefs });
         for (const p of projections) this.enqueue('projection', p.id);
@@ -79,6 +82,9 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
       this.db.prepare('UPDATE session_polls SET revision=revision+1,attempts=0,next_at=? WHERE session_record_id=?')
         .run(new Date(Date.parse(this.clock.now()) + intervalMs).toISOString(), session.id);
       this.log(null, 'session_observation', { enrollmentId: session.id, observationId: received.id });
+      if (observedEpoch === this.recoveryEpoch() && observation.state !== 'outcome_unknown' && observation.evidenceRefs.length) {
+        this.db.prepare("UPDATE restore_observation_checks SET resolved=1 WHERE kind='session' AND id=? AND epoch=?").run(session.id, observedEpoch);
+      }
     });
   }
   retrySession(poll: SessionPoll, policy: RetryPolicy, random: number): void {
@@ -101,6 +107,7 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
   }
   dueProjections(): Delivery[] {
     this.transaction(()=>{
+      if (this.recoveryStatus().paused) return; // Each restored identity needs its own fresh read.
       const pending=this.db.prepare("SELECT d.projection_id FROM deliveries d LEFT JOIN projection_attempts a ON a.projection_id=d.projection_id WHERE d.state='pending' AND d.projection_id IS NOT NULL AND a.projection_id IS NULL ORDER BY d.rowid DESC").all();
       const seen=new Set<string>();
       for(const row of pending){
@@ -109,7 +116,9 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
         seen.add(key);
       }
     });
-    return this.db.prepare("SELECT id FROM deliveries WHERE projection_id IS NOT NULL AND state IN ('pending','reconcile') AND next_at<=? ORDER BY rowid LIMIT 64")
+    return this.db.prepare(`SELECT id FROM deliveries WHERE projection_id IS NOT NULL AND
+      (state IN ('pending','reconcile') OR EXISTS (SELECT 1 FROM restore_observation_checks c WHERE c.kind='projection' AND c.id=deliveries.projection_id AND c.resolved=0))
+      AND next_at<=? ORDER BY rowid LIMIT 64`)
       .all(this.clock.now()).map(row => this.delivery(String(row.id)));
   }
   projectionToken(id: string): string | null {
@@ -158,8 +167,17 @@ export class ObservationStore extends ExecutionStore implements ObservationPort 
     if (!this.projectionAllowed(projection.runId)) return 'wait';
     return 'write';
   }
-  inspectProjection(id: string, expectedRevision: number, view: ProjectionView): 'write' | 'wait' | 'finished' {
-    return this.transaction(() => this.projectionDecision(id, expectedRevision, view));
+  inspectProjection(id: string, expectedRevision: number, view: ProjectionView, observedEpoch?: number): 'write' | 'wait' | 'finished' {
+    return this.transaction(() => {
+      if (observedEpoch !== undefined && observedEpoch !== this.recoveryEpoch()) throw new LifecycleError('revision_conflict');
+      const checked = validated('projection-observation', view), projection = this.get('projection', id);
+      if (checked.providerId !== projection.providerId || checked.subjectId !== projection.subjectId || checked.fieldId !== projection.fieldId ||
+        this.delivery(`projection:${id}`).revision !== expectedRevision) throw new LifecycleError('identity_conflict');
+      const result = this.projectionDecision(id, expectedRevision, checked);
+      const uncertain = this.db.prepare("SELECT 1 FROM projection_attempts WHERE projection_id=? AND state='started'").get(id);
+      if (!uncertain && observedEpoch === this.recoveryEpoch()) this.db.prepare("UPDATE restore_observation_checks SET resolved=1 WHERE kind='projection' AND id=? AND epoch=?").run(id, observedEpoch);
+      return result;
+    });
   }
   beginProjection(id: string, expectedRevision: number, view: ProjectionView,mode:'atomic'|'checked'='atomic'): string {
     return this.transaction(() => {

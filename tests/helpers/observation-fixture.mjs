@@ -17,6 +17,15 @@ export function observation(session, fields = {}) {
     state: session.state, lastTurnId: session.lastTurnId, humanActivityRevision: session.humanActivityRevision,
     effectiveSettings: {}, evidenceRefs: ['backend:observed'], ...fields };
 }
+export async function observeRestoreProjections(store, path) {
+  for (const id of store.recoveryStatus().unresolvedProjections) {
+    const projection = store.get('projection', id), external = provider(path + '-' + id + '.sqlite', projection);
+    try {
+      const epoch = store.recoveryEpoch(), view = await external.adapter.read(projection);
+      store.inspectProjection(id, store.delivery(`projection:${id}`).revision, view, epoch);
+    } finally { external.close(); }
+  }
+}
 // Stateful synthetic provider with real version CAS and durable write-token identity.
 // It does not establish that GitHub supplies these capabilities.
 export function provider(path, projection) {

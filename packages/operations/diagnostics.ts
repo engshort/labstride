@@ -5,7 +5,7 @@ import { workspaceTargetResolver } from '../connector-ssh/workspaces.ts';
 import { readProtected } from '../target-helper/filesystem.ts';
 import { validated, validationIssues } from '../storage-sqlite/validation.ts';
 import { BridgeClient } from './bridge.ts';
-import { isPublic, installationDependencies, installationShape, verifyRootMapping } from './installation.ts';
+import { isPublic, installationHost, installationDependencies, installationShape, verifyRootMapping } from './installation.ts';
 import type { Installation } from './installation.ts';
 import type { OperatorDiagnosticReportV1 } from '../../contracts/generated/diagnostic-report.ts';
 import { brokerReachable, probeReady } from './runner-probe.ts';
@@ -19,7 +19,7 @@ const known = new Set(['credential_unavailable','credential_expired','permission
   'broker_configuration_invalid','probe_policy_mismatch','provider_unavailable','backend_version_mismatch','agent_default_unsupported',
   'agent_default_invalid','root_mapping_mismatch','target_unavailable','transport_unknown','rate_limited','budget_exhausted','unsafe_state_path',
   'unsupported_schema','storage_failure','recovery_required','effect_blocked','service_lock_present','service_lock_unavailable','usage','not_found',
-  'backup_exists','release_metadata_invalid','release_metadata_unreadable','operation_failed','identity_conflict','revision_conflict','invalid_transition']);
+  'backup_exists','backup_invalid','restore_destination_occupied','maintenance_incomplete','migration_failed','release_metadata_invalid','release_metadata_unreadable','operation_failed','identity_conflict','revision_conflict','invalid_transition']);
 export function diagnosticCode(error: unknown): string {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
   return known.has(code) ? code : code === 'ENOENT' ? 'missing_file' : 'operation_failed';
@@ -87,13 +87,13 @@ export async function checkInstallation(spec: Installation, runtime = true, opti
     add('field_binding_verified', `/fields/${name}`, `Stable field/option IDs resolved with selected credentials. Writable: ${binding.writable}; transition history: ${binding.history}; actor attribution: ${binding.actorAttribution}.`, 'info', 'observed');
   }
   for (const pin of spec.lock.extensions) {
-    try { inspectExtension(pin, spec.host); add('extension_verified', `/extensions/${pin.id}`, 'Pinned bytes, protocol, permissions and declared capabilities match.', 'info', 'observed'); }
+    try { inspectExtension(pin, installationHost(spec)); add('extension_verified', `/extensions/${pin.id}`, 'Pinned bytes, protocol, permissions and declared capabilities match.', 'info', 'observed'); }
     catch (error) { add(diagnosticCode(error), `/extensions/${pin.id}`, 'Provide the reviewed artifact and exact integrity pin, granting only its required permissions and capabilities.'); }
   }
   if (compilation.ok) try {
     const id = isPublic(spec) ? 'labstride.github.project' : 'labstride.github.native';
     const pin = spec.lock.extensions.find(pin => pin.id === id); if (!pin) throw Error('provider_unavailable');
-    await loadExtension(freezeProfile('preflight', compilation.configuration.snapshot.digest, pin, spec.host), spec.host, { githubReader: dependencies.adapter });
+    await loadExtension(freezeProfile('preflight', compilation.configuration.snapshot.digest, pin, installationHost(spec)), installationHost(spec), { githubReader: dependencies.adapter });
   } catch (error) { add(diagnosticCode(error), '/extensions', 'Verify the selected provider artifact and capability contract.'); }
   if (runtime) {
     try { await dependencies.rest.installationRepositories(spec.policy.repositories.map(repository => repository.id));
@@ -103,7 +103,7 @@ export async function checkInstallation(spec: Installation, runtime = true, opti
       if (target.connector !== 'labstride.connector.ssh') continue;
       try {
         const pin = spec.lock.extensions.find(pin => pin.id === target.connector); if (!pin) throw Error('target_unavailable');
-        const connector = options.targetProbe ? null : await workspaceTargetResolver(spec.host).resolve(freezeProfile('preflight', compilation.ok ? compilation.configuration.snapshot.digest : '0'.repeat(64), { ...pin, configuration: target.configuration }, spec.host));
+        const connector = options.targetProbe ? null : await workspaceTargetResolver(installationHost(spec)).resolve(freezeProfile('preflight', compilation.ok ? compilation.configuration.snapshot.digest : '0'.repeat(64), { ...pin, configuration: target.configuration }, installationHost(spec)));
         const raw = options.targetProbe ? await options.targetProbe(id) : await connector!.invoke({ schemaVersion: '2.0', requestId: 'preflight', installationId: spec.configuration.installationId,
           targetId: id, targetRevision: target.configuration.revision as number, method: 'probe', includeRoots: true });
         const response = validated('ssh-workspace-response', raw as import('../../contracts/generated/ssh-workspace-response.ts').TrustedWorkspaceHelperResponseV2);
@@ -137,7 +137,7 @@ export async function checkInstallation(spec: Installation, runtime = true, opti
   if (options.database) {
     try {
       const status = readStatus(spec.stateDirectory);
-      if (status.recovery.paused) add('recovery_required', '/stateDirectory', 'Recovery is fenced. Reconcile every unresolved operation before recovery resume.', options.mode === 'reconcile-only' ? 'info' : 'error');
+      if (status.recovery.paused) add('recovery_required', '/stateDirectory', 'Recovery is fenced. Reconcile unresolved operations, sessions and projections before recovery resume.', options.mode === 'reconcile-only' ? 'info' : 'error');
       if (status.projections.pending || status.projections.blocked || status.projections.conflict) add('projection_backlog', '/stateDirectory', 'Inspect run projection identities and blockers; reconcile observations without overwriting manual values.', 'warning', 'observed');
       if (!status.providers.length) add('provider_observations_missing', '/stateDirectory', 'No provider observation is recorded yet. Initial import must establish an inert baseline.', 'warning', 'unavailable');
       if (status.providers.some(provider => provider.lastError || provider.catchupPending || provider.overdue)) add('provider_observation_backlog', '/stateDirectory', 'Inspect provider errors and catch-up state. Invalid cursors and partial errors do not establish successful recovery.', 'warning', 'observed');

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { observeRestoreProjections } from './helpers/observation-fixture.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, chmodSync, cpSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -139,7 +140,8 @@ test('recovery CLI retains the fence across ordinary resume and reconciles origi
   const op = startPlan().operation;
   const adapter = { async validate(){}, async start(){ starts++; throw Error(); }, async reconcile(request){ reads++; return { schemaVersion: '1.0', kind: 'result', operationId: request.operationId, requestDigest: request.requestDigest, result: { status: 'succeeded', handle: request.operationId, resources: [], outputs: {}, evidenceRefs: ['test:independent-observation'], error: null } }; } };
   const worker = createWorker(store, { executorId: 'recovery-test', nextAttempt: () => 'attempt', adapters: new Map([[actionKey(op.request.actionId,op.request.actionVersion), adapter]]) });
-  await worker.tick(); await worker.drain(); store.close();
+  await worker.tick(); await worker.drain();
+  await observeRestoreProjections(store, join(f.root, 'restore-provider')); store.close();
   assert.equal(starts, 0); assert.equal(reads, 1);
   await cli(['recovery','resume','--config',f.path], value => output.push(value)); assert.equal(output.at(-1).paused, false);
 });

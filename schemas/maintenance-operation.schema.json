@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Installation maintenance operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "operation": {
+      "enum": [
+        "restore",
+        "upgrade"
+      ]
+    },
+    "bundle": {
+      "type": "string",
+      "minLength": 1
+    },
+    "installationId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "operation",
+    "bundle",
+    "installationId"
+  ]
+}

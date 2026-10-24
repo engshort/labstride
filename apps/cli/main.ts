@@ -61,7 +61,17 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     const view = extensionView(spec); emit(view); if (view.extensions.some(extension => !extension.ok)) process.exitCode = 1; return;
   }
   if (args[0] === 'backup' && args.length === 2) { await backupDatabase(spec.stateDirectory, args[1]); emit({ schemaVersion: '1.0', code: 'backup_created', restoreRequiresReconciliation: true }); return; }
+  if (args[0] === 'backup' && args.length === 3 && args[1] === '--bundle') {
+    const { createBackupBundle } = await import('../../packages/operations/recovery.ts'); emit(await createBackupBundle(spec, args[2])); return;
+  }
+  if (args[0] === 'restore' && args.length === 2) {
+    const { restoreBundle } = await import('../../packages/operations/recovery.ts'); emit(await restoreBundle(spec, args[1])); return;
+  }
+  if (args[0] === 'upgrade' && args.length === 3 && args[1] === '--backup') {
+    const { upgradeDatabase } = await import('../../packages/operations/recovery.ts'); emit(await upgradeDatabase(spec, args[2])); return;
+  }
   if (args[0] === 'serve' && (args.length === 1 || args.length === 2 && ['--diagnostics-only','--reconcile-only'].includes(args[1]))) {
+    const { assertNoMaintenance } = await import('../../packages/storage-sqlite/maintenance.ts'); assertNoMaintenance(spec.stateDirectory);
     const release = await acquireServiceLock(spec.stateDirectory), controller = new AbortController();
     const stop = () => controller.abort(); process.once('SIGINT', stop); process.once('SIGTERM', stop);
     try {
@@ -118,7 +128,7 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
 }
 export function safeCode(error: unknown): string {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
-  return new Set(['usage','release_metadata_invalid','release_metadata_unreadable','configuration_invalid','effect_blocked','recovery_required','identity_conflict','revision_conflict','invalid_transition','not_found','storage_failure','unsupported_schema','unsafe_state_path','service_lock_present','service_lock_unavailable','backup_exists','broker_configuration_invalid','probe_policy_missing','probe_policy_mismatch','forbidden']).has(code) ? code : 'operation_failed';
+  return new Set(['usage','release_metadata_invalid','release_metadata_unreadable','configuration_invalid','effect_blocked','recovery_required','identity_conflict','revision_conflict','invalid_transition','not_found','storage_failure','unsupported_schema','unsafe_state_path','service_lock_present','service_lock_unavailable','backup_exists','backup_invalid','restore_destination_occupied','maintenance_incomplete','migration_failed','installation_binding_invalid','broker_configuration_invalid','probe_policy_missing','probe_policy_mismatch','forbidden']).has(code) ? code : 'operation_failed';
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.umask(0o077);

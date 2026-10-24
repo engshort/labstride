@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { OperationalInstallationV1 } from '../../contracts/generated/operational-installation.ts';
 import type { PublicInstallationV2 } from '../../contracts/generated/public-installation.ts';
 import { GitHubAdapter } from '../provider-github/adapter.ts';
@@ -36,12 +37,13 @@ export function installationShape(spec: Installation) {
     if (!projection || projection.field !== name || fields[name].options?.[String(projection.value)] !== defaultId) throw Error('agent_default_invalid');
   }
 }
+export function installationHost(spec: Installation) { return { ...spec.host, artifactDirectory: join(spec.stateDirectory, 'artifacts') }; }
 export function installationDependencies(spec: Installation, transport: typeof fetch = fetch) {
   const credential = credentialResolver(spec, transport), client = new GitHubClient({ credential, fetch: transport, requestsPerTick: 256 });
   const options = { configuration: spec.configuration, client, historyQualifications: spec.historyQualifications };
   const adapter = isPublic(spec) ? new GitHubAdapter({ ...options, providerId: 'labstride.github.project' }) : new GitHubIssueFieldsAdapter({ ...options, providerId: 'labstride.github.native' });
   const rest = new GitHubRest(credential, spec.configuration.github.credentialRef, transport);
-  const compiler = { lock: spec.lock, host: spec.host, secrets: { exists: (reference: string) => Boolean(spec.credentials[reference]) }, provider: adapter };
+  const compiler = { lock: spec.lock, host: installationHost(spec), secrets: { exists: (reference: string) => Boolean(spec.credentials[reference]) }, provider: adapter };
   return { credential, client, adapter, rest, compiler };
 }
 export function verifyRootMapping(spec: Pick<OperationalInstallationV1, 'sourceRoot' | 'targetId' | 'rootId'>, mapping: any, input: unknown) {

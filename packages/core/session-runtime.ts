@@ -9,7 +9,9 @@ import { randomUUID } from 'node:crypto';
 export function pinnedSessionObserver(store: SessionStore, resolve: (profile: Profile) => Promise<SessionProvider>) {
   return { async observe(session: RecordOf<'session'>) {
     const binding = store.binding(session.id);
-    if (binding.status !== 'attached') throw new LifecycleError('effect_blocked');
+    // A delayed close reply can detach during recovery. Independent reads may
+    // confirm that closed identity; detachment never grants command authority.
+    if (binding.status !== 'attached' && session.state !== 'closed') throw new LifecycleError('effect_blocked');
     const instance = await resolve(store.profile(session.runId, session.providerId));
     if (instance.backendIdentity !== binding.backendIdentity) throw new LifecycleError('identity_conflict');
     const request: SessionRequest = { schemaVersion: '1.0', operationId: `read:${randomUUID()}`, workspaceId: session.workspaceId,

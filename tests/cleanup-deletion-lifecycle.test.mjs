@@ -80,7 +80,7 @@ for(const stage of ['before-prepare','after-delete'])test(`AC20 actual coordinat
 test('migration 19 preserves v18 pending assessments without fabricating a deletion',async t=>{
  const {DatabaseSync}=await import('node:sqlite');const x=await fixture(t);delete x.options.deleteTarget;await x.worker().assess(x.id);
  const old=x.store.cleanupRequests(x.runId)[0].operation,db=new DatabaseSync(join(x.state,'state.sqlite'));
- db.exec('DROP TABLE cleanup_executions; DELETE FROM schema_migrations WHERE version=19; PRAGMA user_version=18');db.close();
+ db.exec('DROP TABLE restore_observation_checks; DELETE FROM schema_migrations WHERE version=20; DROP TABLE cleanup_executions; DELETE FROM schema_migrations WHERE version=19; PRAGMA user_version=18');db.close();
  x.reopen();assert.deepEqual(x.store.cleanupRequests(x.runId)[0].operation,old);assert.equal(x.store.cleanupExecution(x.id),null);assert.ok(existsSync(x.path));
 });
 test('an assessment-only frozen 1.0.0 artifact remains pending and cannot invoke deletion',async t=>{

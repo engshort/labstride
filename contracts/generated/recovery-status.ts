@@ -5,4 +5,6 @@ export interface RecoveryControlStatusV1 {
   paused: boolean;
   epoch: number;
   unresolved: string[];
+  unresolvedSessions?: string[];
+  unresolvedProjections?: string[];
 }

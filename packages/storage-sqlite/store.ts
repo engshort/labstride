@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { checkChange, LifecycleError } from '../core/lifecycle.ts';
 import type { AuditContext, AuditRecord, Change, Clock, IdentityProvider, Kind, LifecycleRecord, RecordOf, RecoverySnapshot, StateStore } from '../core/lifecycle.ts';
 import { migrate, verifySchema } from './migrations.ts';
+import { assertNoMaintenance } from './maintenance.ts';
 import { validated } from './validation.ts';
 import { assertDatabaseFiles, assertSeparate, canonicalPath } from './paths.ts';
 import { checkedSnapshot } from '../configuration/snapshot.ts';
@@ -34,6 +35,7 @@ export class SqliteStore implements StateStore {
   protected identities: IdentityProvider;
 
   constructor(dataDir: string, dependencies: StoreDependencies = {}) {
+    assertNoMaintenance(dataDir);
     this.clock = dependencies.clock ?? { now: () => new Date().toISOString() };
     this.identities = dependencies.identities ?? { next: randomUUID };
     const canonical = canonicalPath(dataDir);

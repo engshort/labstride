@@ -20,6 +20,9 @@ The JSON schemas are proposed normative v1 contracts for implementation. They ar
 | [extension artifact](../schemas/extension-artifact.schema.json) | [structural template](../examples/extension-artifact.json) | Installed ESM loader |
 | [extension lock](../schemas/extension-lock.schema.json) | [lock template](../examples/extension-lock.json) | Trusted installation composition |
 | [extension profile](../schemas/extension-profile.schema.json) | [frozen profile](../examples/extension-profile.json) | Active run/recovery |
+| [backup bundle](../schemas/backup-bundle.schema.json) | [structural metadata](../examples/backup-bundle.json) | Consistent backup and fresh-directory restore |
+| [maintenance operation](../schemas/maintenance-operation.schema.json) | [interruption marker](../examples/maintenance-operation.json) | Restore/upgrade startup fence |
+| [maintenance result](../schemas/maintenance-result.schema.json) | [CLI result](../examples/maintenance-result.json) | Explicit backup/restore/upgrade commands |
 | [session binding](../schemas/session-binding.schema.json) | [binding](../examples/session-binding.json) | Durable enrollment |
 | [session command](../schemas/session-command.schema.json) | [registered command](../examples/session-command.json) | Immutable operation binding |
 | [session reply](../schemas/session-reply.schema.json) | [reply](../examples/session-reply.json) | Session adapter boundary |

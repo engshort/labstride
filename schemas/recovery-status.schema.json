@@ -19,6 +19,18 @@
       "items": {
         "type": "string"
       }
+    },
+    "unresolvedSessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unresolvedProjections": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [
