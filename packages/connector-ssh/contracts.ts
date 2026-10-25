@@ -27,6 +27,7 @@ export function connectorContracts(options: { connector: TargetConnector; instal
       await options.connector.validate(helper);
       crossed = request.method === 'execute';
       const reply = validated('ssh-helper-response', await options.connector.invoke(helper));
+      if (reply.error) { reply.error.message = reply.error.code; reply.error.evidenceId = null; }
       if (reply.outcome !== 'ok') return result({ outcome: reply.outcome, result: null, error: reply.error });
       return result({ outcome: 'ok', error: null, result: request.method === 'probe' ?
         { targetId: options.targetId, capabilities: reply.capabilities, evidenceRefs: ['target:probe'] } :

@@ -35,7 +35,7 @@ The [workflow broker](38-workflow-broker.md) binds OIDC to an independent run at
 
 Store IDs, revisions, hashes, safe status and evidence references in the coordinator. Session transcripts remain with their session provider by default. Do not mirror whole issues, source files, prompts or secret values into audit logs. Logs may contain sensitive repo names/paths; document their access and retention.
 
-Default metadata retention is 90 days as an adjustable design choice. Never expire active, unknown or retained-resource records. Purge only resolved terminal records according to policy, preserving the evidence needed for still-live resources.
+Default metadata retention is 90 days as an adjustable design choice. Never expire active, unknown or retained-resource records. Compact only eligible resolved terminal diagnostics according to the [explicit operational retention policy](16-operations-and-cli.md#explicit-diagnostic-retention), preserving the evidence needed for still-live resources. W06.3 uses allowlisted diagnostic codes, minimized observation logs and safe receipt errors; protected execution descriptors and provider-owned transcripts have separate purposes and access boundaries. Existing historical records and backups are not retroactively scrubbed.
 
 ## Host access
 

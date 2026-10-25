@@ -1015,7 +1015,7 @@
       "title": "Provide redacted operational evidence",
       "phase": "MVP",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "implemented",
       "owner_role": "maintainer",
       "work_package": "W06",
       "depends_on_work_packages": [
@@ -1030,7 +1030,8 @@
       ],
       "implementation_pr": "https://github.com/engshort/labstride/pull/65",
       "verification_evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.3-bounded-evidence-2026-10-25.md"
       ],
       "github_issue": 32,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/32"
@@ -1040,7 +1041,7 @@
       "title": "Apply bounded retention and budgets",
       "phase": "MVP",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "implemented",
       "owner_role": "maintainer",
       "work_package": "W06",
       "depends_on_work_packages": [
@@ -1054,7 +1055,8 @@
       ],
       "implementation_pr": "https://github.com/engshort/labstride/pull/65",
       "verification_evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.3-bounded-evidence-2026-10-25.md"
       ],
       "github_issue": 32,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/32"

@@ -359,7 +359,8 @@
       "expected": "No new repairs start; actual or unknown result is retained.",
       "status": "not_run",
       "evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.3-bounded-evidence-2026-10-25.md"
       ]
     },
     {
@@ -412,7 +413,8 @@
       "expected": "Logs and receipts omit secret values.",
       "status": "not_run",
       "evidence": [
-        "evidence/W04-W06-local-self-build-2026-10-24.md"
+        "evidence/W04-W06-local-self-build-2026-10-24.md",
+        "evidence/W06.3-bounded-evidence-2026-10-25.md"
       ]
     },
     {

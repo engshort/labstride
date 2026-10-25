@@ -1,3 +1,4 @@
+import { removeOperationsMigration } from './helpers/migration-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -162,6 +163,7 @@ test('upgrade retains active handles and artifacts; failed DDL leaves original v
   f.store.acceptResult(reply(f.plan.operation.request, 'accepted'), claim, f.plan.operation.revision);
   f.close();
   const db = new DatabaseSync(join(f.spec.stateDirectory, 'state.sqlite'));
+  removeOperationsMigration(db);
   db.exec('DROP TABLE restore_observation_checks; DELETE FROM schema_migrations WHERE version=20; PRAGMA user_version=19'); db.close();
   const failing = [...migrations, { version: migrations.length + 1, sql: 'CREATE TABLE partial_upgrade(id TEXT); INVALID SQL;' }];
   await assert.rejects(upgradeDatabase(f.spec, f.bundle, { migrations: failing }), /migration_failed/);
@@ -178,6 +180,7 @@ test('upgrade retains active handles and artifacts; failed DDL leaves original v
 test('successful explicit upgrade fences current state and preserves its pre-upgrade bundle', async t => {
   const f = fixture(t, true); f.close(); const out = [];
   const old = new DatabaseSync(join(f.spec.stateDirectory, 'state.sqlite'));
+  removeOperationsMigration(old);
   old.exec('DROP TABLE restore_observation_checks; DELETE FROM schema_migrations WHERE version=20; PRAGMA user_version=19'); old.close();
   await cli(['upgrade','--backup',f.bundle,'--config',f.path], value => out.push(value));
   assert.equal(out[0].code, 'upgrade_completed'); assert.equal(readStatus(f.spec.stateDirectory).recovery.paused, true);

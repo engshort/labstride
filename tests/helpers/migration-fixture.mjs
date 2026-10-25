@@ -18,6 +18,7 @@ export function removeGitHubMigration(db){
 }
 
 export function removeDeploymentOrderingMigration(db) {
+  removeOperationsMigration(db);
   db.exec('DROP TABLE IF EXISTS restore_observation_checks; DELETE FROM schema_migrations WHERE version=20;');
   db.exec('DROP TABLE IF EXISTS cleanup_executions; DELETE FROM schema_migrations WHERE version=19;');
   db.exec('DROP TABLE IF EXISTS cleanup_decisions; DROP TABLE IF EXISTS cleanup_requests; DELETE FROM schema_migrations WHERE version=18;');
@@ -31,4 +32,14 @@ export function removeDeploymentOrderingMigration(db) {
     ALTER TABLE deployments ADD COLUMN state TEXT GENERATED ALWAYS AS (json_extract(payload,'$.state')) VIRTUAL
       NOT NULL CHECK(state IN ('requested','running','verified','failed','outcome_unknown'));
     PRAGMA user_version=16;`);
+}
+
+export function removeOperationsMigration(db) {
+  db.exec(`DROP VIEW IF EXISTS retention_diagnostics; DROP VIEW IF EXISTS retention_resolved_runs;
+    DROP TABLE IF EXISTS retention_candidates; DROP TABLE IF EXISTS retention_batches;
+    DROP INDEX IF EXISTS execution_log_operation_kind_sequence;
+    DROP TRIGGER execution_log_no_delete;
+    CREATE TRIGGER execution_log_no_delete BEFORE DELETE ON execution_log BEGIN SELECT RAISE(ABORT,'immutable_execution_log'); END;
+    ALTER TABLE workflow_receipts DROP COLUMN source_digest;
+    DELETE FROM schema_migrations WHERE version=21; PRAGMA user_version=20;`);
 }

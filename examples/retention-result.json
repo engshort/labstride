@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0",
+  "at": "2026-10-25T12:00:00.000Z",
+  "cutoff": "2026-07-27T12:00:00.000Z",
+  "mode": "apply",
+  "eligible": 503,
+  "deleted": 500,
+  "remaining": 3,
+  "batchLimit": 500,
+  "blockers": [
+    "recovery_evidence"
+  ]
+}

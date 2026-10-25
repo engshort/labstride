@@ -5,6 +5,7 @@ import { fenceRecovery } from './recovery.ts';
 import { controlContext } from './scheduling.ts';
 import { validated } from './validation.ts';
 import { LifecycleError } from '../core/lifecycle.ts';
+import { safeResult } from '../core/diagnostics.ts';
 import type { AutomationContext } from '../../contracts/generated/automation-context.ts';
 import type { RunControl } from '../../contracts/generated/run-control.ts';
 import type { LocalPolicyAuthority } from '../core/policy.ts';
@@ -130,7 +131,7 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
     const automation = validated<AutomationContext>('automation-context', input.automation ?? { schemaVersion: '1.0' });
     if (operation.kind !== 'operation' || outbox.kind !== 'outbox' || operation.request.requestDigest !== requestDigest(operation.request) ||
       (input.capacityClass !== undefined && !['development','ciReview'].includes(input.capacityClass))) throw new LifecycleError('invalid_payload');
-    this.refreshAutomation(operation.runId);
+    this.refreshAutomation(operation.runId, !!automation.repair);
     return this.transaction(() => {
       const old = this.db.prepare('SELECT payload FROM operations WHERE id=?').get(operation.id);
       if (old) {
@@ -157,7 +158,7 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
       this.db.prepare('INSERT INTO operation_scheduling(operation_id,capacity_class,automation) VALUES (?,?,?)')
         .run(operation.id, input.capacityClass ?? 'development', JSON.stringify(automation));
       this.enqueue('operation', operation.id);
-      this.log(operation.id, 'operation_scheduled', { context, capacityClass: input.capacityClass ?? 'development', automation });
+      this.log(operation.id, 'operation_scheduled', { context, capacityClass: input.capacityClass ?? 'development', automationDigest: digest(automation) });
       return operation.id;
     });
   }
@@ -179,6 +180,10 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
       .all(this.clock.now()).map(row => this.delivery(String(row.id)));
   }
   protected log(operationId: string | null, kind: string, payload: unknown): void {
+    if (kind === 'observation' || kind === 'result_conflict') {
+      const bound = payload as BoundResult;
+      payload = { ...bound, result: { ...bound.result, resources: [], outputs: {} } };
+    }
     const json = JSON.stringify(payload);
     if (Buffer.byteLength(json) > 262144) throw new LifecycleError('invalid_payload');
     this.db.prepare('INSERT INTO execution_log(operation_id,at,kind,payload) VALUES (?,?,?,?)').run(operationId, this.clock.now(), kind, json);
@@ -212,7 +217,7 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
   }
   claim(operationId: string, executorId: string, attemptId: string): Claim {
     bounded(executorId); bounded(attemptId);
-    this.refreshAutomation(this.get('operation', operationId).runId);
+    this.refreshAutomation(this.get('operation', operationId).runId, !!this.automationContext(operationId).repair);
     return this.transaction(() => {
       const old = this.db.prepare('SELECT payload FROM claims WHERE operation_id=?').get(operationId);
       if (old) {
@@ -247,7 +252,7 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
     return { consumed: Number(row.consumed), active: Number(row.active) };
   }
   beginEffect(claim: Claim, atomicSessionGuards = false, createsWorkspace = false): void {
-    this.refreshAutomation(this.get('operation', claim.operationId).runId);
+    this.refreshAutomation(this.get('operation', claim.operationId).runId, !!this.automationContext(claim.operationId).repair);
     this.transaction(() => {
       const row = this.checkClaim(claim);
       if (!row.active || row.consumed) throw new LifecycleError('effect_consumed');
@@ -289,10 +294,10 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
   validateResult(input: BoundResult): BoundResult {
     const bound = validated('execution-record', input);
     if (bound.kind !== 'result') throw new LifecycleError('invalid_payload');
-    return bound;
+    return safeResult(bound);
   }
   acceptResult(input: BoundResult, claim: Claim | null, expectedRevision: number, projections: RecordOf<'projection'>[] = [], observedEpoch = 0, createsWorkspace = false): boolean {
-    const bound = validated('execution-record', input);
+    const bound = this.validateResult(input);
     if (bound.kind !== 'result') throw new LifecycleError('invalid_payload');
     // Only the deployment store can establish a no-dispatch supersession.
     if (bound.result.status === 'superseded') throw new LifecycleError('effect_blocked');
@@ -305,7 +310,9 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
       if (handle && bound.result.handle && handle !== bound.result.handle) throw new LifecycleError('identity_conflict');
       const existing = this.db.prepare('SELECT payload FROM execution_results WHERE operation_id=?').get(op.id);
       if (existing) {
-        if (canonical(JSON.parse(String(existing.payload))) === canonical(bound)) {
+        // Compare diagnostics in their safe form without rewriting historical
+        // immutable receipts. An upgrade must not invent a result conflict.
+        if (canonical(this.validateResult(JSON.parse(String(existing.payload)))) === canonical(bound)) {
           this.finishDelivery(op.id, !claim);
           return true;
         }
@@ -387,6 +394,12 @@ export class ExecutionStore extends PolicyStore implements InboxStore {
     const run = this.get('run', runId), control = this.db.prepare('SELECT * FROM run_controls WHERE run_id=?').get(runId);
     return this.policyProjectionAllowed(runId) && !run.paused && !control?.operator_paused && !control?.cancel_requested && !control?.human_hold && !control?.budget_hold &&
       this.db.prepare('SELECT paused FROM recovery_control WHERE id=1').get()!.paused === 0;
+  }
+  summaryAllowed(runId: string): boolean {
+    // Status writes explain holds; they cannot advance fields or actions.
+    this.runConfiguration(runId);
+    this.get('run', runId);
+    return this.policyProjectionAllowed(runId) && this.db.prepare('SELECT paused FROM recovery_control WHERE id=1').get()!.paused === 0;
   }
   controlStatus(runId: string) {
     const run = this.get('run', runId);

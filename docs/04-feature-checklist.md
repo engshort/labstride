@@ -604,14 +604,14 @@ Implementation issue: [#31](https://github.com/alex-engvall/labstride/issues/31)
 
 | Phase | Priority | Status | Work package |
 | --- | --- | --- | --- |
-| MVP | P0 | in_progress | W06 |
+| MVP | P0 | implemented | W06 |
 
 Specification: [11-security-and-trust.md](11-security-and-trust.md).
 
 - Logs/metrics contain IDs and safe reasons but no credentials, issue bodies or transcripts by default.
 - Publish bounded relevant progress summaries through the coordinator instead of mirroring every tool call or full session transcripts into GitHub.
 
-Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md
+Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W06.3-bounded-evidence-2026-10-25.md
 
 Implementation issue: [#32](https://github.com/alex-engvall/labstride/issues/32).
 
@@ -619,13 +619,13 @@ Implementation issue: [#32](https://github.com/alex-engvall/labstride/issues/32)
 
 | Phase | Priority | Status | Work package |
 | --- | --- | --- | --- |
-| MVP | P0 | in_progress | W06 |
+| MVP | P0 | implemented | W06 |
 
 Specification: [16-operations-and-cli.md](16-operations-and-cli.md).
 
 - Configured budgets stop indefinite repairs; retention does not remove unresolved-resource records.
 
-Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md
+Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W06.3-bounded-evidence-2026-10-25.md
 
 Implementation issue: [#32](https://github.com/alex-engvall/labstride/issues/32).
 

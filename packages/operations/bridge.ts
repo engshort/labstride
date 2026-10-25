@@ -1,4 +1,5 @@
 import { connect, createServer } from 'node:net';
+import { safeError } from '../core/diagnostics.ts';
 import { accessSync, constants, chmodSync, lstatSync, readFileSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -225,7 +226,7 @@ export async function serveBridge(policy: BridgePolicy) {
     socket.on('data', part => { bytes = Buffer.concat([bytes, part]); if (bytes.length > 262144) socket.destroy(); });
     socket.on('end', async () => {
       try { const result = await bridge.call(JSON.parse(bytes.toString('utf8'))); socket.end(JSON.stringify({ schemaVersion: '1.0', result })); }
-      catch (error) { const code = error instanceof Error && /^[a-z_]{1,100}$/.test(error.message) ? error.message : 'bridge_failed'; socket.end(JSON.stringify({ schemaVersion: '1.0', error: code })); }
+      catch (error) { socket.end(JSON.stringify({ schemaVersion: '1.0', error: safeError(error) })); }
     });
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(policy.socket, resolve); });

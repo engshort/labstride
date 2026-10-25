@@ -1,3 +1,4 @@
+import { safeReason } from '../core/diagnostics.ts';
 import { enrolledWorkflow } from '../workflow-broker/bindings.ts';
 import { DeploymentOrderingStore } from './deployment-ordering.ts';
 import { validated } from './validation.ts';
@@ -151,7 +152,11 @@ export class WorkflowBrokerStore extends DeploymentOrderingStore {
     return row ? validated('receipt', JSON.parse(String(row.payload)) as WorkflowReceipt) : null;
   }
   acceptWorkflowReceipt(operationId: string, input: WorkflowReceipt, executor: WorkflowClaim['executor']): void {
-    const receipt = validated('receipt', input);
+    const receipt = validated('receipt', input), sourceDigest = digest(input);
+    if (receipt.error) {
+      receipt.error.code = safeReason(receipt.error.code);
+      receipt.error.message = receipt.error.code;
+    }
     const conflict = this.transaction(() => {
       const claim = this.workflowClaim(operationId), op = this.get('operation', operationId).request;
       if (!claim || receipt.operationId !== operationId || receipt.claimId !== claim.claimId || receipt.fencingNumber !== claim.fencingNumber ||
@@ -159,10 +164,11 @@ export class WorkflowBrokerStore extends DeploymentOrderingStore {
         canonical(receipt.executor) !== canonical(executor) || canonical(executor) !== canonical(claim.executor) ||
         this.db.prepare('SELECT consumed FROM workflow_claims WHERE operation_id=?').get(operationId)?.consumed !== 1) throw new BrokerError('identity_rejected', 403);
       const previous = this.workflowReceipt(operationId);
-      if (previous && canonical(previous) !== canonical(receipt)) { this.workflowConflict(operationId); return true; }
+      const originalDigest = this.db.prepare('SELECT source_digest FROM workflow_receipts WHERE operation_id=?').get(operationId)?.source_digest;
+      if (previous && (originalDigest ?? digest(previous)) !== sourceDigest) { this.workflowConflict(operationId); return true; }
       if (!previous) {
-        this.db.prepare('INSERT INTO workflow_receipts VALUES (?,?)').run(operationId, canonical(receipt));
-        this.log(operationId, 'workflow_receipt', { digest: digest(receipt), conclusion: receipt.conclusion });
+        this.db.prepare('INSERT INTO workflow_receipts(operation_id,payload,source_digest) VALUES (?,?,?)').run(operationId, canonical(receipt), sourceDigest);
+        this.log(operationId, 'workflow_receipt', { digest: sourceDigest, conclusion: receipt.conclusion });
       }
       return false;
     });

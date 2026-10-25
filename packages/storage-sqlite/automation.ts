@@ -1,6 +1,7 @@
 import { SchedulingStore, controlContext } from './scheduling.ts';
 import { validated } from './validation.ts';
 import { LifecycleError } from '../core/lifecycle.ts';
+import { diagnosticEvent } from '../core/diagnostics.ts';
 import type { AutomationContext } from '../../contracts/generated/automation-context.ts';
 import type { RunBudget } from '../../contracts/generated/run-budget.ts';
 import type { AuditContext } from '../core/lifecycle.ts';
@@ -14,17 +15,17 @@ export class AutomationStore extends SchedulingStore {
     return validated('automation-context', JSON.parse(String(row.automation)));
   }
   sessionGuard(operationId: string) { return this.automationContext(operationId).sessionGuard; }
-  protected refreshAutomation(runId: string): void {
+  protected refreshAutomation(runId: string, repairRequested = false): void {
     this.transaction(() => {
       const c = this.db.prepare('SELECT c.*,a.admitted_at FROM run_controls c LEFT JOIN run_admissions a ON a.run_id=c.run_id WHERE c.run_id=?').get(runId);
       if (!c) return;
       const anchor = c.budget_anchor ?? c.admitted_at;
-      const reason = (c.repairs as number) >= (c.max_repairs as number) && (c.repairs as number) > 0 ? 'repair_budget' :
+      const reason = (c.repairs as number) >= (c.max_repairs as number) && ((c.repairs as number) > 0 || repairRequested) ? 'repair_budget' :
         anchor && Date.parse(this.clock.now()) - Date.parse(String(anchor)) >= (c.unattended_ms as number) ? 'unattended_timeout' : null;
       if (reason && !c.budget_hold) {
         this.db.prepare('UPDATE run_controls SET budget_hold=? WHERE run_id=?').run(reason, runId);
         this.db.prepare('INSERT INTO execution_log(operation_id,at,kind,payload) VALUES (NULL,?,?,?)')
-          .run(this.clock.now(), 'budget_hold', JSON.stringify({ runId, reason }));
+          .run(this.clock.now(), 'budget_hold', JSON.stringify(diagnosticEvent(reason, this.clock.now(), runId)));
       }
     });
   }

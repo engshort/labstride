@@ -85,7 +85,7 @@ export class SessionStore extends ObservationStore {
           binding.backendIdentity !== command.backendIdentity || binding.profileDigest !== command.profileDigest) throw new LifecycleError('identity_conflict');
       }
       this.db.prepare('INSERT INTO session_commands VALUES (?,?,NULL)').run(operationId, canonical(command));
-      this.log(operationId, 'session_intent', { command, context });
+      this.log(operationId, 'session_intent', { enrollmentId: command.enrollmentId, command: request.command, digest: digest(command), context });
     });
   }
   command(operationId: string): SessionCommand {

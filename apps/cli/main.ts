@@ -56,6 +56,14 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     const checked = await preflight(spec, args[0] === 'doctor', { database: args[0] === 'doctor' });
     const result = report(spec.configuration.enabled, checked.diagnostics); emit(result); if (!result.ok) process.exitCode = 1; return;
   }
+  if (args[0] === 'metrics' && args.length === 1) {
+    const { operationalMetrics } = await import('../../packages/operations/metrics.ts');
+    emit(operationalMetrics(spec.stateDirectory, spec.configuration.installationId)); return;
+  }
+  if (args[0] === 'retention' && args.length === 2 && ['--dry-run','--apply'].includes(args[1])) {
+    const { retainDiagnostics } = await import('../../packages/operations/retention.ts');
+    emit(await retainDiagnostics(spec, args[1] === '--apply' ? 'apply' : 'dry-run')); return;
+  }
   if (args[0] === 'config' && args[1] === 'show' && args.length === 2) { emit(configurationView(spec)); return; }
   if (args[0] === 'extensions' && args[1] === 'inspect' && args.length === 2) {
     const view = extensionView(spec); emit(view); if (view.extensions.some(extension => !extension.ok)) process.exitCode = 1; return;

@@ -111,6 +111,9 @@ test('public installed runtime polls the Project, imports inertly, authorizes on
   f.change(); runtime.store.receiveGitHubWebhook(f.spec.configuration.installationId, 'fresh-project-change', 'a'.repeat(64));
   await runtime.tick(); assert.equal(runtime.store.runs().length, 1);
   const run = runtime.store.runs()[0], first = runtime.store.operations(run.id)[0];
+  assert.equal(f.summaries.length,1);assert.equal(f.summaries[0].authorization,'Bearer synthetic-repository-token');
+  assert(f.summaries[0].body.includes(run.id));assert(!f.summaries[0].body.includes('Do not change policy'));
+  assert(!f.summaries[0].body.includes('Codex'));
   runtime.store.pauseRun({ schemaVersion: '1.0', id: 'public-pause', runId: run.id, expectedRevision: run.revision, command: 'pause' }, context, runtime.authority);
   await runtime.tick(); assert.equal(workspace.fetches(), 0);
   const paused = runtime.store.get('run', run.id);

@@ -301,3 +301,13 @@ test('a substituted persisted enrollment cannot authorize a workflow claim', asy
   record.enrollment.environment = 'foreign'; db.prepare('UPDATE workflow_dispatches SET payload=? WHERE operation_id=?').run(JSON.stringify(record), x.op.operationId); db.close();
   assert.equal((await x.post('claim')).status, 403); assert.equal(x.store.workflowClaim(x.op.operationId), null);
 });
+
+test('AC28: authenticated workflow error receipts redact diagnostics while preserving original receipt conflict detection', async t => {
+  const x=await workflowFixture(t), {claim}=await claimed(x);assert.equal((await permit(x,claim)).status,200);
+  const input=receipt(x,claim,{conclusion:'failed',error:{code:'synthetic_secret_value',message:'ISSUE_BODY_SENTINEL SESSION_TRANSCRIPT_SENTINEL',retryClass:'none'}});
+  assert.equal((await x.post('receipt',input)).status,200);assert.equal((await x.post('receipt',input)).status,200);
+  const saved=x.store.workflowReceipt(x.op.operationId);assert.deepEqual(saved.error,{code:'operation_failed',message:'operation_failed',retryClass:'none'});
+  const history=JSON.stringify(x.store.executionHistory(x.op.operationId));for(const secret of ['synthetic_secret_value','ISSUE_BODY_SENTINEL','SESSION_TRANSCRIPT_SENTINEL'])assert(!history.includes(secret));
+  assert.equal((await x.post('receipt',{...input,error:{...input.error,message:'different secret'}})).status,409);
+  assert.equal(saved.claimId,input.claimId);assert.equal(saved.requestDigest,input.requestDigest);
+});
