@@ -1,4 +1,5 @@
 import { openSync, closeSync, constants } from 'node:fs';
+import { diagnosticEvent } from '../core/diagnostics.ts';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { protectedPath } from '../target-helper/filesystem.ts';
@@ -25,7 +26,7 @@ export async function serviceLoop(runtime: { tick(): Promise<void>; close(): Pro
   try {
     while (!signal.aborted) {
       try { await runtime.tick(); }
-      catch { process.stderr.write(JSON.stringify({ schemaVersion: '1.0', code: 'tick_failed' }) + '\n'); }
+      catch { process.stderr.write(JSON.stringify(diagnosticEvent('tick_failed', new Date().toISOString())) + '\n'); }
       await new Promise<void>(resolve => { const end = () => { clearTimeout(timer); signal.removeEventListener('abort', end); resolve(); };
         const timer = setTimeout(end, interval); signal.addEventListener('abort', end, { once: true }); if (signal.aborted) end(); });
     }

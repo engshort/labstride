@@ -59,6 +59,7 @@ def main():
 
     pairs = {
         **{name:name for name in ['cleanup-delete-input','cleanup-preparation','cleanup-tombstone','ssh-cleanup-delete-request','ssh-cleanup-delete-response','cleanup-policy','cleanup-inspection','cleanup-decision','cleanup-action-input','ssh-cleanup-request','ssh-cleanup-response','managed-cleanup-observation']},
+        **{name: name for name in ['operational-event','operational-metrics','retention-result']},
         'backup-bundle': 'backup-bundle', 'maintenance-operation': 'maintenance-operation', 'maintenance-result': 'maintenance-result',
         'config': 'installation.template', 'extension': 'extension', 'cli-version': 'cli-version',
         'operational-installation': 'operational-installation', 'self-build-input': 'self-build-input', 'managed-result': 'managed-result', 'managed-session-start': 'managed-session-start',

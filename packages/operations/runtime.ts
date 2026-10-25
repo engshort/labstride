@@ -83,11 +83,11 @@ export async function openOperationalRuntime(spec: Installation, options: Parame
     async tick() {
       if (mode === 'normal') store.advanceWorkflows(installationHost(spec));
       await execution.tick(); await execution.drain();
-      if (isPublic(spec)) return;
-      for (const run of store.runs()) {
+      if (mode === 'normal') for (const run of store.runs()) {
         try { await publishRunSummary(store, run.id, checked.rest, checked.client); }
         catch { store.summaryError(run.id, 'summary_observation_failed'); }
       }
+      if (isPublic(spec)) return;
       for (const pr of store.pullRequests()) {
         store.deferPullRequest(pr.runId);
         try {

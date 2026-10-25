@@ -35,7 +35,7 @@ export function publicFixture(t, { sourceSha = 'a'.repeat(40), connectorModule, 
     if (index === 1 && connectorConfiguration) pin.configuration = spec.configuration.targets.development.configuration = connectorConfiguration;
   }
   spec.configuration.extensions = spec.lock.extensions.map(({ id, version, integrity }) => ({ id, version, integrity }));
-  let time = new Date(Date.now() - 1000).toISOString(), current = 'wait-id', events = [], queries = [], failure = null;
+  let time = new Date(Date.now() - 1000).toISOString(), current = 'wait-id', events = [], queries = [], summaries = [], failure = null;
   const pageInfo = { hasNextPage: false, endCursor: null };
   const statusEvent = (id, previousStatus, status, actor = 'operator-test') => ({ __typename: 'ProjectV2ItemStatusChangedEvent', id, createdAt: time, previousStatus, status, project: { id: 'project-test' }, actor: { id: actor } });
   const item = () => ({ id: 'item-test', updatedAt: time, project: { id: 'project-test' },
@@ -44,17 +44,22 @@ export function publicFixture(t, { sourceSha = 'a'.repeat(40), connectorModule, 
   const transport = async (url, init = {}) => {
     if (String(url).endsWith('/access_tokens')) return Response.json({ token: 'synthetic-repository-token', expires_at: new Date(Date.now() + 3600000).toISOString() });
     if (String(url).includes('/installation/repositories')) return Response.json({ total_count: 1, repositories: [{ node_id: 'repository-test' }] });
+    if (/\/issues(?:\/comments)?\//.test(String(url))) {
+      if (init.method==='POST' || init.method==='PATCH') summaries.push({body:JSON.parse(init.body).body,authorization:init.headers.authorization});
+      return Response.json({id:123,body:summaries.at(-1)?.body});
+    }
     const body = JSON.parse(init.body); queries.push({ query: body.query, authorization: init.headers.authorization });
     if (failure) return Response.json({ errors: [{ type: failure }], data: { node: null } });
     let node;
-    if (body.query.includes('LabstrideFields')) node = { id: 'project-test', viewerCanUpdate: true, fields: { nodes: [{ id: 'request-test', name: 'Status', dataType: 'SINGLE_SELECT', options: [{ id: 'start-id', name: 'Start' }, { id: 'wait-id', name: 'Wait' }] }, { id: 'status-test', name: 'Progress', dataType: 'TEXT' }], pageInfo } };
+    if (body.query.includes('LabstrideSummaryIssue')) node = {number:32,repository:{nameWithOwner:'example/source'}};
+    else if (body.query.includes('LabstrideFields')) node = { id: 'project-test', viewerCanUpdate: true, fields: { nodes: [{ id: 'request-test', name: 'Status', dataType: 'SINGLE_SELECT', options: [{ id: 'start-id', name: 'Start' }, { id: 'wait-id', name: 'Wait' }] }, { id: 'status-test', name: 'Progress', dataType: 'TEXT' }], pageInfo } };
     else if (body.query.includes('LabstrideHistory')) node = { timelineItems: { nodes: body.variables.id === 'qualification-issue' ? [statusEvent('qualification-event', 'Wait', 'Start')] : events, pageInfo } };
     else if (body.query.includes('LabstrideItems')) node = { id: 'project-test', items: { nodes: [item()], pageInfo } };
     else if (body.query.includes('LabstrideItem')) node = item();
     else throw Error('unexpected_fixture_query');
     return Response.json({ data: { node } });
   };
-  return { root, spec, transport, queries, dependencies: () => installationDependencies(spec, transport),
+  return { root, spec, transport, queries, summaries, dependencies: () => installationDependencies(spec, transport),
     change(actor = 'operator-test') { time = new Date(Date.now()).toISOString(); events.push(statusEvent('start-event-' + events.length, current === 'wait-id' ? 'Wait' : 'Start', current === 'wait-id' ? 'Start' : 'Wait', actor)); current = current === 'wait-id' ? 'start-id' : 'wait-id'; },
     fail(value) { failure = value; },
     path: join(root, 'installation.json'), write() { writeFileSync(this.path, JSON.stringify(spec), { mode: 0o600 }); return this.path; } };

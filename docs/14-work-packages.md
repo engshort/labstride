@@ -154,6 +154,8 @@ Tracker: [#9](https://github.com/alex-engvall/labstride/issues/9).
 
 **W06.2 delivery:** [Backup and upgrade](41-backup-and-upgrade.md) add complete SQLite/pinned-artifact bundles, fresh-directory restore, transactional explicit database upgrade, interruption markers and session/projection recovery checks. [Evidence](evidence/W06.2-backup-upgrade-2026-10-24.md) covers older-backup recovery against a durable effect peer, migration failure with handles, retained versions and actual SIGKILL boundaries. LS-OPS-002/003 are implemented locally; full installed/live AC21/AC27 remain `not_run` with W06/#9 and W07/#10. Native self-build recovery remains separately gated. W06 remains `in_progress`.
 
+**W06.3 delivery:** [Bounded work and redacted evidence](evidence/W06.3-bounded-evidence-2026-10-25.md) add allowlisted diagnostics, safe receipt errors, aggregate CLI metrics, persisted zero-repair holds, hold-aware summaries in both public profiles and explicit bounded diagnostic retention. SQLite compaction preserves unresolved resources, original outcomes and recovery evidence, including across actual coordinator process loss. LS-OPS-004/005 are implemented for the local profile; full installed/live AC24/AC28 remain `not_run` with W01/#4, W03/#6, W06/#9 and W07/#10. W06 remains `in_progress`; AC35/AC36 are unchanged.
+
 ## W07 — Public examples and prerelease
 
 Tracker: [#10](https://github.com/alex-engvall/labstride/issues/10).

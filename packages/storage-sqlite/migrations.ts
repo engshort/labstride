@@ -296,6 +296,47 @@ export const migrations: readonly Migration[] = [{ version: 1, sql: `
       (SELECT 1 FROM session_bindings b WHERE b.enrollment_id=s.id AND json_extract(b.payload,'$.status')='detached');
   INSERT INTO restore_observation_checks SELECT 'projection',projection_id,(SELECT epoch FROM recovery_control),0 FROM deliveries
     WHERE projection_id IS NOT NULL AND state IN ('pending','reconcile','blocked','conflict') AND (SELECT paused FROM recovery_control)=1;
+` }, { version: 21, sql: `
+  ALTER TABLE workflow_receipts ADD COLUMN source_digest TEXT;
+  CREATE TABLE retention_batches (id TEXT PRIMARY KEY, payload TEXT NOT NULL CHECK(json_valid(payload)));
+  CREATE TRIGGER retention_batch_no_update BEFORE UPDATE ON retention_batches BEGIN SELECT RAISE(ABORT,'immutable_retention_batch'); END;
+  CREATE TRIGGER retention_batch_no_delete BEFORE DELETE ON retention_batches BEGIN SELECT RAISE(ABORT,'immutable_retention_batch'); END;
+  CREATE TABLE retention_candidates (sequence INTEGER PRIMARY KEY, cutoff TEXT NOT NULL);
+  CREATE VIEW retention_resolved_runs AS SELECT r.id FROM runs r
+    WHERE r.state IN ('completed','failed','cancelled')
+    AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.run_id=r.id AND o.state NOT IN ('succeeded','failed','cancelled'))
+    AND NOT EXISTS (SELECT 1 FROM claims c JOIN operations o ON o.id=c.operation_id WHERE o.run_id=r.id AND c.active=1)
+    AND NOT EXISTS (SELECT 1 FROM deliveries d LEFT JOIN operations o ON o.id=d.operation_id LEFT JOIN projections p ON p.id=d.projection_id
+      WHERE (o.run_id=r.id OR p.run_id=r.id) AND d.state NOT IN ('done','superseded'))
+    AND NOT EXISTS (SELECT 1 FROM cancellations c JOIN operations o ON o.id=c.operation_id WHERE o.run_id=r.id AND c.state!='observed')
+    AND NOT EXISTS (SELECT 1 FROM restore_checks c JOIN operations o ON o.id=c.operation_id WHERE o.run_id=r.id AND c.resolved=0)
+    AND NOT EXISTS (SELECT 1 FROM restore_observation_checks WHERE resolved=0)
+    AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.run_id=r.id AND (w.state!='deleted' OR json_extract(w.payload,'$.keep')=1
+      OR NOT EXISTS (SELECT 1 FROM evidence e WHERE e.workspace_id=w.id AND json_extract(e.payload,'$.category')='cleanup'
+        AND json_extract(e.payload,'$.outcome')='verified' AND json_extract(e.payload,'$.tombstoneRef') IS NOT NULL)))
+    AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.run_id=r.id AND json_extract(e.payload,'$.category')='correction')
+    AND NOT EXISTS (SELECT 1 FROM resources x WHERE x.run_id=r.id AND json_extract(x.payload,'$.resourceType')!='source-checkout')
+    AND NOT EXISTS (SELECT 1 FROM deployments d WHERE d.run_id=r.id AND d.state NOT IN ('failed','superseded'))
+    AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.run_id=r.id AND s.state NOT IN ('closed','failed'))
+    AND NOT EXISTS (SELECT 1 FROM managed_sessions s WHERE s.run_id=r.id)
+    AND NOT EXISTS (SELECT 1 FROM managed_effects m JOIN operations o ON o.id=m.operation_id WHERE o.run_id=r.id AND m.response IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM managed_summaries s WHERE s.run_id=r.id AND s.pending=1)
+    AND NOT EXISTS (SELECT 1 FROM workflow_dispatches d JOIN operations o ON o.id=d.operation_id WHERE o.run_id=r.id AND (d.active=1 OR d.conflict=1))
+    AND NOT EXISTS (SELECT 1 FROM cleanup_requests c WHERE c.run_id=r.id AND NOT EXISTS
+      (SELECT 1 FROM cleanup_executions e WHERE e.request_id=c.id AND e.stage='deleted'))
+    AND NOT EXISTS (SELECT 1 FROM execution_bindings b JOIN operations o ON o.id=b.operation_id JOIN resource_holds h ON h.resource_key=b.resource_key WHERE o.run_id=r.id);
+  CREATE INDEX execution_log_operation_kind_sequence ON execution_log(operation_id,kind,sequence);
+  CREATE VIEW retention_diagnostics AS SELECT l.sequence,l.at,o.run_id FROM execution_log l JOIN operations o ON o.id=l.operation_id
+    JOIN retention_resolved_runs r ON r.id=o.run_id
+    WHERE l.kind='retry_scheduled' OR (l.kind='observation' AND json_extract(l.payload,'$.result.status')='accepted'
+      AND l.sequence < (SELECT max(newer.sequence) FROM execution_log newer WHERE newer.operation_id=l.operation_id
+        AND newer.kind='observation' AND json_extract(newer.payload,'$.result.handle') IS NOT NULL));
+  DROP TRIGGER execution_log_no_delete;
+  CREATE TRIGGER execution_log_no_delete BEFORE DELETE ON execution_log WHEN NOT EXISTS
+    (SELECT 1 FROM retention_candidates c JOIN retention_diagnostics d ON d.sequence=c.sequence
+      JOIN runs r ON r.id=d.run_id WHERE c.sequence=OLD.sequence AND OLD.at<c.cutoff
+      AND json_extract(r.payload,'$.updatedAt')<c.cutoff AND (SELECT paused FROM recovery_control)=0)
+    BEGIN SELECT RAISE(ABORT,'immutable_execution_log'); END;
 ` }];
 
 export function verifySchema(db: DatabaseSync): void {

@@ -1,3 +1,4 @@
+import { safeReason } from '../core/diagnostics.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { lstatSync } from 'node:fs';
@@ -31,7 +32,7 @@ export function readStatus(directory: string, installationId?: string) {
       return { providerId: String(value.providerId), scopeId: String(value.scopeId), configDigest: String(value.configDigest),
         epoch: Number(value.epoch), catchupPending: value.cursor !== null || Number(items.n) > 0,
         overdue: Date.now() > Date.parse(value.nextAt) + 120000,
-        lastError: typeof value.lastError === 'string' && /^[a-z_]{1,100}$/.test(value.lastError) ? value.lastError : value.lastError === null ? null : 'provider_unavailable' };
+        lastError: value.lastError === null ? null : safeReason(value.lastError, 'provider_unavailable') };
     });
     return { schemaVersion: '1.0' as const,
       recovery: { schemaVersion: '1.0' as const, paused: !!recovery.paused, epoch: Number(recovery.epoch), unresolved: db.prepare('SELECT operation_id FROM restore_checks WHERE resolved=0 ORDER BY operation_id').all().map(row => String(row.operation_id)),
@@ -70,11 +71,11 @@ export function runView(store: CleanupStore, id: string) {
   return { ...status, recovery: store.recoveryStatus(),
     operations: status.operations.map(operation => ({ operationId: operation.operationId, state: operation.state, effectBoundary: operation.effectBoundary,
       delivery: operation.delivery ? { id: operation.delivery.id, state: operation.delivery.state, attempts: operation.delivery.attempts,
-        code: operation.delivery.lastError && /^[a-z_]{1,100}$/.test(operation.delivery.lastError) ? operation.delivery.lastError : null } : null })),
+        code: operation.delivery.lastError ? safeReason(operation.delivery.lastError) : null } : null })),
     workflowExecutions: store.workflowExecutions(id).map(execution => ({ operationId: execution.operationId, sourceSha: execution.sourceSha,
       workflowSha: execution.workflowSha, workflowRunId: execution.workflowRunId, receiptConclusion: execution.receiptConclusion,
       conflict: execution.conflict, deploymentVerified: execution.deploymentVerified, blocker: 'blocker' in execution ? execution.blocker : null })),
-    diagnostic: store.workflowDiagnostic(id), summaryDiagnostic: store.summaryDiagnostic(id), fieldConflicts: store.managedProjectionDiagnostics(id),
+    diagnostic: store.workflowDiagnostic(id) === null ? null : safeReason(store.workflowDiagnostic(id)), summaryDiagnostic: store.summaryDiagnostic(id) === null ? null : safeReason(store.summaryDiagnostic(id)), fieldConflicts: store.managedProjectionDiagnostics(id),
     session: store.managedSession(id),
     startup: store.operations(id).filter(operation => operation.request.actionId === 'labstride.self-build')
       .map(operation => store.managedSessionStart(operation.id)).filter((value): value is ManagedSessionStartV1 => value !== null),

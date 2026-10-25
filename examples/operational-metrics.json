@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "at": "2026-10-25T12:00:00.000Z",
+  "queueAgeMs": 0,
+  "activeWorkspaces": 0,
+  "actionCount": 0,
+  "actionDurationTotalMs": 0,
+  "actionDurationMaxMs": 0,
+  "unknownOutcomes": 0,
+  "failedReconciliation": 0,
+  "projectionPending": 0,
+  "projectionBlocked": 0,
+  "projectionConflicts": 0,
+  "staleLeases": 0,
+  "repairAttempts": 0,
+  "budgetHolds": 0,
+  "cleanupBlockers": 0
+}

@@ -4,6 +4,7 @@ import { workflowAction, workflowResource } from '../core/workflow-broker.ts';
 import { mergeAction, mergeResource } from '../core/merges.ts';
 import { enrolledMerge } from '../github-merge/bindings.ts';
 import { LifecycleError } from '../core/lifecycle.ts';
+import { safeReason } from '../core/diagnostics.ts';
 import type { RecordOf, AuditContext } from '../core/lifecycle.ts';
 import type { CompiledConfiguration } from '../configuration/compiler.ts';
 import type { HostProfile } from '../extensions/loader.ts';
@@ -48,7 +49,7 @@ export class WorkflowStore extends WorkflowBrokerStore {
   runProjectionStatus(runId: string) {
     this.get('run', runId);
     return this.db.prepare('SELECT p.id,d.state,d.last_error FROM projections p JOIN deliveries d ON d.projection_id=p.id WHERE p.run_id=? ORDER BY p.id')
-      .all(runId).map(row => ({ id: String(row.id), state: String(row.state), code: row.last_error === null ? null : /^[a-z_]{1,100}$/.test(String(row.last_error)) ? String(row.last_error) : 'projection_blocked' }));
+      .all(runId).map(row => ({ id: String(row.id), state: String(row.state), code: row.last_error === null ? null : safeReason(row.last_error, 'projection_blocked') }));
   }
   reconcileRunObservations(runId: string, context: AuditContext, authority: LocalPolicyAuthority): void {
     this.assertOperator(authority);
@@ -123,10 +124,10 @@ export class WorkflowStore extends WorkflowBrokerStore {
     });
   }
   managedProjectionDiagnostics(runId: string) {
-    return this.db.prepare("SELECT p.id,json_extract(p.payload,'$.fieldId') AS fieldId,d.state,d.last_error AS code FROM projections p JOIN deliveries d ON d.projection_id=p.id WHERE p.run_id=? AND d.state IN ('blocked','conflict')").all(runId);
+    return this.db.prepare("SELECT p.id,json_extract(p.payload,'$.fieldId') AS fieldId,d.state,d.last_error AS code FROM projections p JOIN deliveries d ON d.projection_id=p.id WHERE p.run_id=? AND d.state IN ('blocked','conflict')").all(runId).map(row => ({ ...row, code: row.code === null ? null : safeReason(row.code, 'projection_blocked') }));
   }
   summaryError(runId: string, code: string): void {
-    if (!/^[a-z_]{1,100}$/.test(code)) throw new LifecycleError('invalid_payload');
+    code = safeReason(code, 'summary_observation_failed');
     this.db.prepare('INSERT INTO managed_summary_errors VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET code=excluded.code').run(runId, code);
   }
   summaryDiagnostic(runId: string): string | null { return this.db.prepare('SELECT code FROM managed_summary_errors WHERE run_id=?').get(runId)?.code as string ?? null; }
@@ -207,7 +208,7 @@ export class WorkflowStore extends WorkflowBrokerStore {
   summaryIntent(runId: string, body: string): { number: number | null; body: string; previous: string | null; pending: boolean; dispatch: boolean } {
     if (body.length > 16000) throw new LifecycleError('invalid_payload');
     return this.transaction(() => {
-      if (!this.projectionAllowed(runId)) throw new LifecycleError('effect_blocked');
+      if (!this.summaryAllowed(runId)) throw new LifecycleError('effect_blocked');
       const row = this.db.prepare('SELECT * FROM managed_summaries WHERE run_id=?').get(runId), next = new Date(Date.parse(this.clock.now()) + 60000).toISOString();
       if (!row) {
         this.db.prepare('INSERT INTO managed_summaries VALUES (?,NULL,?,NULL,1,?)').run(runId, body, next);
@@ -237,7 +238,7 @@ export class WorkflowStore extends WorkflowBrokerStore {
   workflowDiagnostic(runId: string): string | null { return this.db.prepare('SELECT code FROM workflow_diagnostics WHERE run_id=?').get(runId)?.code as string ?? null; }
   clearWorkflowDiagnostic(runId: string): void { this.db.prepare('DELETE FROM workflow_diagnostics WHERE run_id=?').run(runId); }
   workflowError(runId: string, code: string): void {
-    if (!/^[a-z_]{1,100}$/.test(code)) code = 'workflow_blocked';
+    code = safeReason(code, 'workflow_blocked');
     this.db.prepare('INSERT INTO workflow_diagnostics VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET code=excluded.code').run(runId, code);
   }
   advanceWorkflows(host: HostProfile): void {
