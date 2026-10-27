@@ -29,8 +29,10 @@ export function readStatus(directory: string, installationId?: string) {
     const providers = db.prepare('SELECT payload FROM github_projects ORDER BY key').all().map(row => {
       const value = JSON.parse(String(row.payload));
       const items = db.prepare('SELECT count(*) AS n FROM github_items WHERE project_key=? AND dirty=1 AND removed=0').get(value.key)!;
+      const blocked = db.prepare('SELECT count(*) AS n FROM github_items WHERE project_key=? AND last_error IS NOT NULL AND removed=0').get(value.key)!;
       return { providerId: String(value.providerId), scopeId: String(value.scopeId), configDigest: String(value.configDigest),
         epoch: Number(value.epoch), catchupPending: value.cursor !== null || Number(items.n) > 0,
+        blockedItems: Number(blocked.n),
         overdue: Date.now() > Date.parse(value.nextAt) + 120000,
         lastError: value.lastError === null ? null : safeReason(value.lastError, 'provider_unavailable') };
     });
