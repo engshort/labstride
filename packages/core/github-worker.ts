@@ -33,12 +33,12 @@ export function createGitHubWorker(store: GitHubStore, options: GitHubOptions) {
               catch(error){if(error instanceof GitHubError&&error.code==='invalid_cursor')store.resetGitHubHistory(job);throw error;}
               const item=await options.adapter.item(job.itemId);
               store.commitGitHubHistory(job,page,item,fields[0][0]);
-              const diagnostic=store.githubItemDiagnostics(key).find(value=>value.itemId===job.itemId);
-              if(diagnostic)throw new GitHubError(diagnostic.code,configuration.github.pollIntervalSeconds*1000);
             }
+            const blockedItems=new Set(store.githubItemDiagnostics(key).map(value=>value.itemId));
             for(const candidate of store.githubCandidates(key)){
               const itemId=candidate.observation.event.facts.itemId;
               if(typeof itemId!=='string')throw new GitHubError('invalid_provider_data');
+              if(blockedItems.has(itemId))continue;
               const fresh=await options.adapter.item(itemId);
               store.admitGitHubCandidate(candidate,fresh,options);
             }

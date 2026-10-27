@@ -7,7 +7,8 @@ import { compiledSnapshot } from '../configuration/compiler.ts';
 import { fieldValue } from '../configuration/values.ts';
 import type { CompiledConfiguration } from '../configuration/compiler.ts';
 import type { RuleObservation } from '../configuration/rules.ts';
-import type { ActorEvidence } from '../core/policy.ts';
+import type { ActorEvidence, LocalPolicyAuthority } from '../core/policy.ts';
+import { recoveryContext } from './execution.ts';
 import type { AuditContext, RecordOf } from '../core/lifecycle.ts';
 import { LifecycleError } from '../core/lifecycle.ts';
 import type { GitHubCandidate, GitHubHistory, GitHubHistoryEvent, GitHubItem, GitHubItemJob, GitHubOptions, GitHubProject } from '../core/github.ts';
@@ -139,7 +140,9 @@ export class GitHubStore extends ConfigurationStore {
       // Re-read the last provider page next cycle. Event IDs, not timestamps or
       // totalCount, define deduplication; bootstrap never executes old requests.
       this.db.prepare('UPDATE github_items SET snapshot=?,baseline=1,cursor=?,overlap_cursor=?,dirty=?,revision=revision+1,last_error=? WHERE key=?')
-        .run(canonical(error?before:item),job.cursor,job.cursor,error?1:0,error,job.key);
+        // Preserve blocked history and its baseline, but retry it on the next
+        // enumeration rather than starving other items every worker tick.
+        .run(canonical(error?before:item),job.cursor,job.cursor,0,error,job.key);
       this.log(null,'github_observation',{ itemKey:job.key,error,eventIds:events.map(event=>event.id) });
     });
   }
@@ -209,6 +212,26 @@ export class GitHubStore extends ConfigurationStore {
   githubItemDiagnostics(projectKey: string): {itemId:string;code:string}[] {
     return this.db.prepare('SELECT item_id,last_error FROM github_items WHERE project_key=? AND last_error IS NOT NULL').all(projectKey)
       .map(row=>({itemId:String(row.item_id),code:String(row.last_error)}));
+  }
+  rebaselineGitHubItem(installationId:string,providerId:string,itemId:string,audit:AuditContext,authority?:LocalPolicyAuthority):void{
+    this.assertOperator(authority);const context=recoveryContext(audit);
+    this.transaction(()=>{
+      const active=this.get('installation',installationId).configRevision;
+      const rows=this.db.prepare('SELECT * FROM github_items WHERE item_id=? AND removed=0').all(itemId).filter(row=>{
+        const project=this.githubStatus(String(row.project_key));
+        return project.installationId===installationId&&project.providerId===providerId&&project.configDigest===active;
+      });
+      if(rows.length!==1)throw new LifecycleError('identity_conflict');
+      const row=rows[0],project=this.githubStatus(String(row.project_key));
+      // This narrow recovery command cannot re-admit an issue with any prior
+      // request, even if its existing run is complete or an effect is unknown.
+      if(this.db.prepare("SELECT 1 FROM requests WHERE json_extract(payload,'$.installationId')=? AND json_extract(payload,'$.providerId')=? AND json_extract(payload,'$.issueId')=?").get(installationId,providerId,row.subject_id))
+        throw new LifecycleError('effect_blocked');
+      this.db.prepare("UPDATE github_candidates SET state='superseded' WHERE item_key=? AND state='pending'").run(row.key);
+      this.db.prepare('UPDATE github_items SET cursor=NULL,overlap_cursor=NULL,baseline=0,dirty=1,last_error=NULL,revision=revision+1 WHERE key=? AND revision=?').run(row.key,row.revision);
+      this.saveProject({...project,revision:project.revision+1,nextAt:this.clock.now(),attempts:0,lastError:null},project.revision);
+      this.log(null,'github_operator_rebaseline',{installationId,providerId,itemId,itemKey:row.key,previousRevision:row.revision,previousError:row.last_error,context});
+    });
   }
   resetGitHubList(key:string):void{
     this.transaction(()=>{const p=this.githubStatus(key);this.saveProject({...p,cursor:null,revision:p.revision+1,lastError:'invalid_cursor',nextAt:this.clock.now()},p.revision);});

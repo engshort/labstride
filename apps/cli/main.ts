@@ -94,6 +94,17 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     try { initializePrivateState(spec.stateDirectory); const store = new CleanupStore(spec.stateDirectory); store.close(); emit({ schemaVersion: '1.0', code: 'state_initialized' }); }
     finally { await release(); } return;
   }
+  if (args[0] === 'provider' && args[1] === 'rebaseline' && args.length === 3) {
+    readStatus(spec.stateDirectory,spec.configuration.installationId);
+    const release=await acquireServiceLock(spec.stateDirectory),authority=createLocalPolicyAuthority();
+    try{
+      const store=new CleanupStore(spec.stateDirectory,{policyAuthority:authority});
+      try{store.rebaselineGitHubItem(spec.configuration.installationId,isPublic(spec)?'labstride.github.project':'labstride.github.native',args[2],
+        {actorId:'local-operator',reason:'Explicit inert provider baseline; requires a later fresh authorized transition',evidenceRefs:['operator:local-file-authority']},authority);}
+      finally{store.close();}
+      emit({schemaVersion:'1.0',code:'provider_rebaseline_requested',itemId:args[2],requiresFreshTransition:true});
+    }finally{await release();}return;
+  }
   if (args[0] === 'recovery' && args.length === 2 && ['status','begin','resume'].includes(args[1])) {
     if (args[1] === 'status') { emit(readStatus(spec.stateDirectory).recovery); return; }
     readStatus(spec.stateDirectory);

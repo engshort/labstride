@@ -28,6 +28,7 @@ The executable entry point is `node apps/cli/main.ts`; the administrative bootst
 | `labstride runs list` / `show RUN` | Show controls, operation outcomes, frozen startup selection, session and field/summary conflicts |
 | `labstride runs pause RUN` / `resume RUN` / `cancel RUN` | Submit local operator controls with revision checks; an interrupt acknowledgement is not confirmed cancellation |
 | `labstride runs reconcile RUN` | Resume blocked read observation; retain conflicts and unknown effects |
+| `labstride provider rebaseline ITEM_ID` | With the coordinator stopped, explicitly establish a new inert baseline for an item with no prior request; preserve history and require a later fresh authorized transition |
 | `labstride backup DESTINATION` | Create a consistent SQLite backup without replacing an existing destination |
 
 The outbound issue/PR chain explicitly permits `broker: {"enabled": false}`. Broker-dependent action/connector profiles remain rejected without their required configuration; workflow claims/deployment are not implemented by disabling the broker. The loop uses existing bounded provider retry/budget logic. A known accepted action waiting for a person/CI polls without exhausting a transient-failure retry budget. A fresh bound running acknowledgement resets consecutive read failures and clears stale delivery errors; an unknown result does not. Successful self-build observation/review clears its recovered workflow diagnostic, without deleting uncertain mutation records.

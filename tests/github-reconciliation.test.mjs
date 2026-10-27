@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {join} from 'node:path';
+import {chmodSync,existsSync} from 'node:fs';
 import {startCoordinator} from '../apps/coordinator/main.ts';
 import {createGitHubWorker} from '../packages/core/github-worker.ts';
 import {GitHubError} from '../packages/core/github.ts';
-import {githubFixture,localAuthority} from './helpers/github-fixture.mjs';
+import {readStatus} from '../packages/operations/inspection.ts';
+import {githubFixture,localAuthority,context} from './helpers/github-fixture.mjs';
 const counts=f=>{const db=new DatabaseSync(join(f.root,'state.sqlite'));try{return Object.fromEntries(['requests','runs','workspaces','operations','outbox'].map(table=>[table,Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n)]));}finally{db.close();}};
 
 test('initial import is inert; a missed current transition admits one generation across concurrent workers and restart',async t=>{
@@ -81,4 +83,50 @@ test('a newer human edit after candidate persistence supersedes the pending star
   const admit=f.store.admitGitHubCandidate.bind(f.store);let first=true;
   f.store.admitGitHubCandidate=()=>null;await f.worker.tick();assert.equal(f.store.githubCandidates(f.key).length,1);
   f.store.admitGitHubCandidate=admit;f.change('wait-a');await f.worker.tick();assert.equal(counts(f).runs,0);assert.equal(f.store.githubCandidates(f.key).length,0);
+});
+
+test('incomplete native history blocks only its item and retries at the next enumeration',async t=>{
+  const f=await githubFixture(t,{native:true}),blocked=structuredClone(f.item),blockedEvents=[];
+  blocked.itemId=blocked.subjectId='incomplete-issue';blocked.fields.request={present:false};
+  let blockedReads=0;
+  f.adapter.list=async()=>({items:[structuredClone(blocked),structuredClone(f.item)],hasNextPage:false,endCursor:'list-cursor'});
+  f.adapter.item=async id=>structuredClone(id===blocked.itemId?blocked:f.item);
+  f.adapter.history=async id=>{if(id===blocked.subjectId)blockedReads++;return{schemaVersion:'1.0',events:structuredClone(id===blocked.subjectId?blockedEvents:f.events),hasNextPage:false,endCursor:'history-cursor'};};
+  await f.worker.tick();f.advance();blocked.fields.request={present:true,value:'go-a'};
+  blockedEvents.push({id:'redacted-added-event',kind:'status',scopeId:'scope-a',fieldId:'request-a',actorId:'operator-test',occurredAt:f.now(),previousStatus:null,status:null});
+  f.change();await f.worker.tick();
+  assert.equal(counts(f).runs,1);assert.equal(f.store.get('request',f.store.runs()[0].requestId).issueId,'issue-test');
+  assert.deepEqual(f.store.githubItemDiagnostics(f.key),[{itemId:blocked.itemId,code:'history_ambiguous'}]);
+  assert.equal(f.store.githubStatus(f.key).lastError,null);
+  for(const suffix of ['', '-wal', '-shm']){const path=join(f.root,'state.sqlite'+suffix);if(existsSync(path))chmodSync(path,0o600);}
+  assert.equal(readStatus(f.root).providers[0].blockedItems,1);
+  const reads=blockedReads;await f.worker.tick();assert.equal(blockedReads,reads);
+  f.advance();await f.worker.tick();assert.equal(blockedReads,reads+1);assert.equal(counts(f).runs,1);
+});
+
+test('an earlier pending candidate cannot bypass a later item history diagnostic',async t=>{
+  const f=await githubFixture(t,{native:true});await f.worker.tick();f.advance();f.change();
+  const admit=f.store.admitGitHubCandidate.bind(f.store);f.store.admitGitHubCandidate=()=>null;
+  await f.worker.tick();assert.equal(f.store.githubCandidates(f.key).length,1);
+  f.store.admitGitHubCandidate=admit;f.advance();
+  // Keep the current item/version equal to the candidate, while the newly read
+  // timeline has a gap. Current-state equality cannot erase that diagnostic.
+  f.events.push({id:'redacted-later-event',kind:'status',scopeId:'scope-a',fieldId:'request-a',actorId:'operator-test',occurredAt:f.now(),previousStatus:null,status:null});
+  await f.worker.tick();assert.equal(counts(f).runs,0);
+  assert.equal(f.store.githubCandidates(f.key).length,1);
+  assert.equal(f.store.githubItemDiagnostics(f.key)[0].code,'history_ambiguous');
+});
+
+test('explicit operator rebaseline is inert, requires authority and refuses any previously admitted issue',async t=>{
+  const f=await githubFixture(t,{native:true});await f.worker.tick();f.advance();
+  f.item.fields.request={present:true,value:'go-a'};
+  f.events.push({id:'redacted-added-event',kind:'status',scopeId:'scope-a',fieldId:'request-a',actorId:'operator-test',occurredAt:f.now(),previousStatus:null,status:null});
+  await f.worker.tick();assert.equal(counts(f).runs,0);
+  assert.throws(()=>f.store.rebaselineGitHubItem('installation-a','test.provider','item-test',context),error=>error.code==='effect_blocked');
+  f.store.rebaselineGitHubItem('installation-a','test.provider','item-test',context,localAuthority);
+  await f.worker.tick();assert.equal(counts(f).runs,0);assert.equal(f.store.githubItemDiagnostics(f.key).length,0);
+  f.advance();f.change('wait-a');f.change();await f.worker.tick();assert.equal(counts(f).runs,1);
+  const before=counts(f);
+  assert.throws(()=>f.store.rebaselineGitHubItem('installation-a','test.provider','item-test',context,localAuthority),error=>error.code==='effect_blocked');
+  assert.deepEqual(counts(f),before);
 });

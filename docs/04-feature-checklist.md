@@ -213,7 +213,7 @@ Specification: [09-github-and-workflow-contract.md](09-github-and-workflow-contr
 - The same current request is recovered after a missed event and produces no duplicate run.
 - Missing hooks and failed GitHub progress writes recover through provider observation and the durable projection outbox after coordinator restart.
 
-Verification evidence: evidence/W02.3-reconciliation-2026-10-23.md, evidence/W02.3-live-reconciliation-receipt-2026-10-23.json, evidence/W03.2-native-fields-2026-10-24.md, evidence/W04-W06-local-self-build-2026-10-24.md
+Verification evidence: evidence/W02.3-reconciliation-2026-10-23.md, evidence/W02.3-live-reconciliation-receipt-2026-10-23.json, evidence/W03.2-native-fields-2026-10-24.md, evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W02.3-history-isolation-2026-10-27.md
 
 Implementation issue: [#20](https://github.com/alex-engvall/labstride/issues/20).
 
@@ -568,7 +568,7 @@ Specification: [16-operations-and-cli.md](16-operations-and-cli.md).
 - The intended distribution supplies one CLI/service installation with local SQLite and configurable paths/limits; diagnostics explain optional hook fallback and actual session compatibility.
 - Version JSON reports the packaged source revision and actual Node runtime without credentials, coordinator or writable state; development checkouts explicitly report no installed revision.
 
-Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, Bounded installed pilot: doctor, dedicated credential scope, negative access checks, idle process restart and two isolated No agent runs passed. Native approval/PR canary and full operational acceptance remain open., evidence/W04-W06-native-history-2026-10-24.md, evidence/W06-version-canary-2026-10-24.md, evidence/W04-W06-report-journal-2026-10-24.md, evidence/W04-W06-shallow-publication-2026-10-24.md, evidence/W04-W06-bounded-report-observation-2026-10-24.md, evidence/W06.1-public-operations-2026-10-24.md, evidence/W06.1-recovery-inspection-2026-10-24.md
+Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, Bounded installed pilot: doctor, dedicated credential scope, negative access checks, idle process restart and two isolated No agent runs passed. Native approval/PR canary and full operational acceptance remain open., evidence/W04-W06-native-history-2026-10-24.md, evidence/W06-version-canary-2026-10-24.md, evidence/W04-W06-report-journal-2026-10-24.md, evidence/W04-W06-shallow-publication-2026-10-24.md, evidence/W04-W06-bounded-report-observation-2026-10-24.md, evidence/W06.1-public-operations-2026-10-24.md, evidence/W06.1-recovery-inspection-2026-10-24.md, evidence/W02.3-history-isolation-2026-10-27.md
 
 Implementation issue: [#30](https://github.com/alex-engvall/labstride/issues/30).
 
