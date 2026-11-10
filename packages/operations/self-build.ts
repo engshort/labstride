@@ -144,8 +144,42 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
     // Do not replace an existing description or title: preserve human review edits.
     return pr;
   }
+  async function mergedResult(op: Operation, report: NonNullable<ReturnType<WorkflowStore['managedReport']>>, bind: BridgeBinding) {
+    // Only the durable acknowledgement for this original operation identifies
+    // the PR. No search, adoption or publication is permitted on this path.
+    const created = store.readManagedEffect(op.operationId, 'pull-request-create') as any;
+    if (!created) return false;
+    if (!Number.isSafeInteger(created.number) || created.number < 1 || typeof created.node_id !== 'string' || !created.node_id) throw Error('pull_request_conflict');
+    const pr = await rest.request('GET', `/repos/${op.source.repository}/pulls/${created.number}`);
+    if (pr?.merged !== true) return false;
+    const workspace = store.workspace(op.runId);
+    if (!pr || pr.number !== created.number || pr.node_id !== created.node_id ||
+      typeof pr.body !== 'string' || !pr.body.includes(`<!-- labstride:${op.runId} -->`) ||
+      pr.head?.repo?.node_id !== op.source.repositoryId || pr.base?.repo?.node_id !== op.source.repositoryId ||
+      pr.head?.ref !== workspace.branch || pr.base?.ref !== options.baseBranch || pr.head?.sha !== report.commitSha) throw Error('pull_request_conflict');
+    if (pr.state !== 'closed') throw Error('pull_request_conflict');
+    const current = await bridge.call({ schemaVersion: '1.0', method: 'observe', binding: bind, sessionId: report.sessionId });
+    if (!store.forwardAllowed(op.runId) || current.state === 'active' || current.turn?.id !== report.turnId || current.turn?.status !== 'completed') throw Error('stale_revision');
+    return true;
+  }
+  async function cancellationResult(op: Operation): Promise<BoundResult> {
+    // Unknown publication/start/interrupt effects survive an idle observation.
+    // Never erase or replay them merely to release capacity.
+    if (store.unresolvedManagedEffects(op.operationId).length) return result(op, 'accepted');
+    const session = store.managedSession(op.runId);
+    if (!session) return result(op, store.hasManagedEffect(op.operationId, 'thread-start') ? 'accepted' : 'cancelled');
+    const bind = binding(op);
+    const observation = validated('managed-cleanup-observation', await bridge.call({ schemaVersion: '1.0', method: 'cleanup-observe', binding: bind, sessionId: session.sessionId }));
+    if (observation.runId !== bind.runId || observation.workspaceId !== bind.workspaceId || observation.sessionId !== session.sessionId || observation.path !== bind.path) throw Error('identity_mismatch');
+    if (observation.state !== 'idle') return result(op, 'accepted');
+    // The bridge's stable double read confirms no native work is running.
+    // This is task cancellation only: retain the session, checkout and receipts.
+    store.clearWorkflowDiagnostic(op.runId);
+    return result(op, 'cancelled', { sessionRetained: true, lastTurnId: observation.lastTurnId });
+  }
   async function step(op: Operation): Promise<BoundResult> {
     if (store.get('run', op.runId).state === 'completed') return result(op, 'succeeded', { merged: true });
+    if (store.controlStatus(op.runId).cancelRequested) return cancellationResult(op);
     if (!store.forwardAllowed(op.runId)) return result(op, 'accepted');
     const bind = binding(op), request = store.get('request', store.get('run', op.runId).requestId);
     let session = store.managedSession(op.runId);
@@ -202,6 +236,10 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
     if (observation.report.status !== 'ready') { store.workflowError(op.runId, 'agent_report_blocked'); return result(op, 'accepted'); }
     if (observation.turn?.id !== observation.report.turnId || observation.turn.status !== 'completed') throw Error('stale_revision');
     const report = store.managedReport(op.runId)!;
+    if (await mergedResult(op, report, bind)) {
+      store.clearWorkflowDiagnostic(op.runId);
+      return result(op, 'succeeded', { merged: true, pullRequest: store.readManagedEffect(op.operationId, 'pull-request-create'), sha: report.commitSha });
+    }
     const pr = await publish(op, report, bind);
     const path = `/repos/${op.source.repository}`;
     const fetchPages = async (endpoint: string, property: string) => {
@@ -243,9 +281,9 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
     async reconcile(op) { try { return await step(op); } catch (error) { store.workflowError(op.runId, error instanceof Error ? error.message : 'workflow_blocked'); throw error; } },
     async cancel(op, _handle, controlId) {
       const session = store.managedSession(op.runId);
-      if (!session) return result(op, store.hasManagedEffect(op.operationId, 'thread-start') ? 'accepted' : 'cancelled', { noRegisteredSession: true });
+      if (!session) return cancellationResult(op);
       const bind = binding(op), observation = await bridge.call({ schemaVersion: '1.0', method: 'observe', binding: bind, sessionId: session.sessionId });
-      if (observation.turn?.status !== 'inProgress') return result(op, 'accepted');
+      if (observation.turn?.status !== 'inProgress') return cancellationResult(op);
       const command = { schemaVersion: '1.0' as const, method: 'interrupt' as const, binding: bind, sessionId: session.sessionId, parameters: { turnId: observation.turn.id } };
       const name = `interrupt-${digest(controlId).slice(0, 20)}`;
       const permit = store.beginManagedEffect(op.operationId, name, { requestDigest: digest(command) }, controlId);

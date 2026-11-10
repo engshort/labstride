@@ -337,6 +337,11 @@ export const migrations: readonly Migration[] = [{ version: 1, sql: `
       JOIN runs r ON r.id=d.run_id WHERE c.sequence=OLD.sequence AND OLD.at<c.cutoff
       AND json_extract(r.payload,'$.updatedAt')<c.cutoff AND (SELECT paused FROM recovery_control)=0)
     BEGIN SELECT RAISE(ABORT,'immutable_execution_log'); END;
+` }, { version: 22, sql: `
+  CREATE TABLE github_candidate_retries (
+    candidate_id TEXT PRIMARY KEY REFERENCES github_candidates(id), code TEXT NOT NULL,
+    attempts INTEGER NOT NULL, last_attempt TEXT NOT NULL, next_at TEXT NOT NULL);
+  CREATE INDEX github_candidate_retries_due ON github_candidate_retries(next_at,last_attempt);
 ` }];
 
 export function verifySchema(db: DatabaseSync): void {

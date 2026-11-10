@@ -82,6 +82,8 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     if (request.method === 'catalog') return { models: [{ model: 'test-model', reasoning: supported ? ['medium'] : [] }] };
     if (request.method === 'start') { state.starts++; if (state.startLoss) throw Error('transport_unknown'); return { thread: { id: 'original-session', cwd } }; }
     if (request.method === 'turn') { state.turns++; assert.equal(request.parameters.mode, 'plan'); return { turn: state.latest }; }
+    if (request.method === 'cleanup-observe') return { schemaVersion: '1.0', runId: request.binding.runId, workspaceId: request.binding.workspaceId, path: request.binding.path, observedAt: f.now(), sessionId: request.sessionId, state: state.latest?.status === 'inProgress' ? 'active' : state.cleanupState ?? 'idle', lastTurnId: state.latest?.id ?? null };
+    if (request.method === 'interrupt') { state.interrupts = (state.interrupts ?? 0) + 1; state.latest.status = 'interrupted'; if (state.interruptLoss) throw Error('transport_unknown'); return { interrupted: state.latest.id }; }
     if (request.method === 'observe') return { sessionId: 'original-session', path: cwd, state: 'idle', turn: state.latest, report: state.report };
     if (request.method === 'bundle') {
       const path = join(source.root, 'result.bundle'); git(['bundle','create',path,'HEAD']);
@@ -114,10 +116,10 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     }
     if (method === 'POST' && path.endsWith('/pulls')) {
       state.creates++; state.pr = { number: 42, node_id: 'pull-42', state: 'open', body: input.body, title: input.title, draft: true,
-        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } }, base: { ref: 'main' }, html_url: 'https://github.com/example/source/pull/42' };
+        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } }, base: { ref: 'main', repo: { node_id: source.operation.source.repositoryId } }, html_url: 'https://github.com/example/source/pull/42' };
       if (state.loss) { state.loss = false; throw Error('transport_unknown'); } return state.pr;
     }
-    if (path.includes('/pulls')) { if (state.pr) state.pr.head.sha = branchSha(); return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr; }
+    if (path.includes('/pulls')) { if (state.readFailure) throw Error('provider_unavailable'); if (state.pr) state.pr.head.sha = branchSha(); return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr; }
     if (path.includes('/actions/runs')) return { workflow_runs: [{ id: 1, check_suite_id: 7, path: options.requiredWorkflows[0], head_sha: branchSha(), event: 'pull_request', status: 'completed', conclusion: 'success' }] };
     if (path.includes('/check-runs')) return { check_runs: [{ id: 1, head_sha: branchSha(), check_suite: { id: 7 }, name: 'verify', app: { id: 1 }, status: 'completed', conclusion: 'success' }] };
     if (path.includes('/statuses')) return [];
@@ -307,4 +309,134 @@ test('unsupported startup choices create no native intent and operator cancellat
   await controls.tick(); await controls.drain();
   assert.equal(f.store.get('run', run.id).state, 'cancelled'); assert.equal(f.store.workspace(run.id).keep, true);
   assert.equal(f.state.starts, 0);
+});
+
+
+async function readyMergeFixture(t) {
+  const f = await setup(t);
+  for (let i = 0; i < 8 && !f.state.turns; i++) await f.tick();
+  f.commit('merge-ready.txt'); await f.tick(); await f.tick();
+  assert.equal(f.state.creates, 1);
+  assert.equal(f.store.get('operation', f.op.operationId).state, 'running');
+  f.state.pr.merged = true; f.state.pr.state = 'closed';
+  return f;
+}
+const writeCounts = f => ({ pushes: f.state.pushes, creates: f.state.creates, starts: f.state.starts, turns: f.state.turns, readies: f.state.readies });
+test('exact acknowledged owner merge succeeds through ordinary executor without publication or native input', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f);
+  await f.tick();
+  assert.equal(f.store.get('operation', f.op.operationId).state, 'succeeded');
+  assert.deepEqual(writeCounts(f), before);
+  assert.equal(f.store.workflowDiagnostic(f.run.id), null);
+});
+for (const [name, alter] of [
+  ['node ID', f => { f.state.pr.node_id = 'other-pr'; }],
+  ['number', f => { f.state.pr.number++; }],
+  ['marker', f => { f.state.pr.body = '<!-- labstride:other -->'; }],
+  ['head repository', f => { f.state.pr.head.repo.node_id = 'other-repository'; }],
+  ['base repository', f => { f.state.pr.base.repo.node_id = 'other-repository'; }],
+  ['head branch', f => { f.state.pr.head.ref = 'other-branch'; }],
+  ['base branch', f => { f.state.pr.base.ref = 'other-base'; }],
+  ['head SHA', f => { f.state.report = { ...f.state.report, commitSha: 'f'.repeat(40) }; }],
+  ['open merged state', f => { f.state.pr.state = 'open'; }],
+]) test(`merged acknowledgement rejects mismatched ${name} before any remote write`, async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f); alter(f);
+  await assert.rejects(f.action.reconcile(f.op, f.op.operationId), /pull_request_conflict/);
+  assert.equal(f.store.get('operation', f.op.operationId).state, 'running');
+  assert.deepEqual(writeCounts(f), before);
+});
+test('closed unmerged PR cannot acknowledge the operation', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f); f.state.pr.merged = false;
+  await assert.rejects(f.action.reconcile(f.op, f.op.operationId), /pull_request_conflict/);
+  assert.deepEqual(writeCounts(f), before);
+});
+test('open unmerged PR retains normal accepted review workflow', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f); f.state.pr.merged = false; f.state.pr.state = 'open';
+  assert.equal((await f.action.reconcile(f.op, f.op.operationId)).result.status, 'accepted');
+  assert.deepEqual(writeCounts(f), before);
+});
+test('lost exact PR read cannot publish or acknowledge success', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f); f.state.readFailure = true;
+  await assert.rejects(f.action.reconcile(f.op, f.op.operationId), /provider_unavailable/);
+  assert.deepEqual(writeCounts(f), before);
+  f.state.readFailure = false;
+  assert.equal((await f.action.reconcile(f.op, f.op.operationId)).result.status, 'succeeded');
+  assert.deepEqual(writeCounts(f), before);
+});
+test('missing durable original PR acknowledgement never claims merged success', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f);
+  const original = f.store.readManagedEffect.bind(f.store);
+  f.store.readManagedEffect = (id, name) => name === 'pull-request-create' ? null : original(id, name);
+  await assert.rejects(f.action.reconcile(f.op, f.op.operationId), /pull_request_conflict/);
+  assert.deepEqual(writeCounts(f), before);
+});
+test('a new native turn observed during merge confirmation prevents completion', async t => {
+  const f = await readyMergeFixture(t), before = writeCounts(f);
+  const original = f.store.readManagedEffect.bind(f.store);
+  f.store.readManagedEffect = (id, name) => {
+    const value = original(id,name);
+    if (name === 'pull-request-create') f.state.latest = { id: 'new-human-turn', status: 'inProgress' };
+    return value;
+  };
+  await assert.rejects(f.action.reconcile(f.op, f.op.operationId), /stale_revision/);
+  assert.deepEqual(writeCounts(f), before);
+});
+
+async function cancelFixture(f) {
+  const run=f.store.get('run',f.run.id);
+  f.store.cancelRun({schemaVersion:'1.0',id:'explicit-stop',runId:run.id,expectedRevision:run.revision,command:'cancel'},context,localAuthority);
+  const controls=createControlWorker(f.store,{executorId:'stop',nextAttempt:()=>crypto.randomUUID(),adapters:new Map([[actionKey(f.op.actionId,f.op.actionVersion),f.action]])});
+  await controls.tick(); await controls.drain();
+}
+for (const active of [false,true]) test(`explicit cancellation confirms native inactivity and retains original session; active=${active}`,async t=>{
+  const f=await setup(t); for(let i=0;i<8&&!f.state.turns;i++)await f.tick();
+  const original=f.store.managedSession(f.run.id), before=writeCounts(f);
+  if(active)f.state.latest.status='inProgress';
+  await cancelFixture(f); await f.tick();
+  assert.equal(f.store.get('run',f.run.id).state,'cancelled');
+  assert.equal(f.store.get('operation',f.op.operationId).state,'cancelled');
+  assert.equal(f.store.workspace(f.run.id).keep,true);
+  assert.deepEqual(f.store.managedSession(f.run.id),original); assert.deepEqual(writeCounts(f),before);
+  assert.equal(f.state.interrupts??0,active?1:0);
+  await f.tick(); assert.equal(f.state.interrupts??0,active?1:0);
+});
+for(const unknown of ['publication','interrupt']) test(`idle cancellation retains uncertain ${unknown} and never replays it`,async t=>{
+  const f=await setup(t); for(let i=0;i<8&&!f.state.turns;i++)await f.tick();
+  if(unknown==='publication')f.store.beginManagedEffect(f.op.operationId,'uncertain-publication',{requestDigest:'retained'});
+  else {f.state.latest.status='inProgress';f.state.interruptLoss=true;}
+  const before=writeCounts(f); await cancelFixture(f); await f.tick(); await f.tick();
+  assert.notEqual(f.store.get('run',f.run.id).state,'cancelled');
+  assert.equal(f.store.unresolvedManagedEffects(f.op.operationId).length,1);
+  assert.deepEqual(writeCounts(f),before); assert.equal(f.state.interrupts??0,unknown==='interrupt'?1:0);
+});
+
+test('read-only status and runs explain identify unknown effects without task data or writes',async t=>{
+  const f=await setup(t,{loseStartReply:true}); for(let i=0;i<8&&!f.state.starts;i++)await f.tick();
+  const spec=JSON.parse(readFileSync(new URL('../examples/operational-installation.json',import.meta.url)));
+  Object.assign(spec,{stateDirectory:f.root,configuration:f.compiled.snapshot.configuration});
+  const path=join(f.root,'explain.json');writeFileSync(path,JSON.stringify(spec),{mode:0o600});
+  const output=[],before=writeCounts(f);
+  await cli(['status','--json','--config',path],value=>output.push(value));
+  await cli(['runs','explain',f.run.id,'--json','--config',path],value=>output.push(value));
+  assert.deepEqual(output[0].unknownEffects,[{runId:f.run.id,operationId:f.op.operationId,effect:'thread-start'}]);
+  assert.equal(output[1].code,'outcome_unknown');assert.match(output[1].nextStep,/do not replay/);
+  assert.equal(JSON.stringify(output).includes('Task data'),false);assert.deepEqual(writeCounts(f),before);
+});
+
+test('runs explain distinguishes the last observed plan approval wait from frozen startup mode',async t=>{
+  const f=await setup(t);for(let i=0;i<8&&!f.state.turns;i++)await f.tick();await f.tick();
+  const {explainRun}=await import('../packages/operations/inspection.ts');
+  const waiting=explainRun(f.store,f.run.id);
+  assert.equal(waiting.workflowPhase,'waiting-accept');assert.equal(waiting.code,'waiting_acceptance');
+  assert.match(waiting.nextStep,/registered session/);assert.equal(f.state.turns,1);
+  f.state.latest={id:'human-approved-work',status:'inProgress'};await f.tick();
+  const working=explainRun(f.store,f.run.id);
+  assert.equal(working.workflowPhase,'working');assert.equal(working.blockers.includes('waiting_acceptance'),false);
+  assert.equal(working.status.startup[0].mode,'plan');assert.equal(f.state.turns,1);
+});
+
+test('cancellation never treats an unknown native state as stable inactivity',async t=>{
+  const f=await setup(t);for(let i=0;i<8&&!f.state.turns;i++)await f.tick();
+  f.state.cleanupState='unknown';await cancelFixture(f);await f.tick();
+  assert.notEqual(f.store.get('run',f.run.id).state,'cancelled');assert.equal(f.state.interrupts??0,0);
 });

@@ -122,7 +122,8 @@
       "implementation_pr": "https://github.com/alex-engvall/labstride/pull/49",
       "verification_evidence": [
         "evidence/W01.3-capacity-2026-10-21.md",
-        "evidence/W01.3-automation-2026-10-21.md"
+        "evidence/W01.3-automation-2026-10-21.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 16,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/16"
@@ -168,7 +169,8 @@
       "implementation_pr": "https://github.com/alex-engvall/labstride/pull/51",
       "verification_evidence": [
         "evidence/W01.3-controls-2026-10-21.md",
-        "evidence/W01.3-automation-2026-10-21.md"
+        "evidence/W01.3-automation-2026-10-21.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 16,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/16"
@@ -357,7 +359,8 @@
         "evidence/W02.3-live-reconciliation-receipt-2026-10-23.json",
         "evidence/W03.2-native-fields-2026-10-24.md",
         "evidence/W04-W06-local-self-build-2026-10-24.md",
-        "evidence/W02.3-history-isolation-2026-10-27.md"
+        "evidence/W02.3-history-isolation-2026-10-27.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 20,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/20"
@@ -958,7 +961,8 @@
         "evidence/W04-W06-bounded-report-observation-2026-10-24.md",
         "evidence/W06.1-public-operations-2026-10-24.md",
         "evidence/W06.1-recovery-inspection-2026-10-24.md",
-        "evidence/W02.3-history-isolation-2026-10-27.md"
+        "evidence/W02.3-history-isolation-2026-10-27.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 30,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/30"
@@ -1033,7 +1037,8 @@
       "implementation_pr": "https://github.com/engshort/labstride/pull/65",
       "verification_evidence": [
         "evidence/W04-W06-local-self-build-2026-10-24.md",
-        "evidence/W06.3-bounded-evidence-2026-10-25.md"
+        "evidence/W06.3-bounded-evidence-2026-10-25.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 32,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/32"
@@ -1241,7 +1246,8 @@
         "evidence/W04-W06-local-self-build-2026-10-24.md",
         "evidence/W04-W06-native-history-2026-10-24.md",
         "evidence/W04-W06-report-journal-2026-10-24.md",
-        "evidence/W04-W06-bounded-report-observation-2026-10-24.md"
+        "evidence/W04-W06-bounded-report-observation-2026-10-24.md",
+        "evidence/W01-W02-W06-installation-recovery-2026-11-10.md"
       ],
       "github_issue": 17,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/17"

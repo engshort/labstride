@@ -5,9 +5,10 @@ import {join} from 'node:path';
 import {chmodSync,existsSync} from 'node:fs';
 import {startCoordinator} from '../apps/coordinator/main.ts';
 import {createGitHubWorker} from '../packages/core/github-worker.ts';
+import {LifecycleError} from '../packages/core/lifecycle.ts';
 import {GitHubError} from '../packages/core/github.ts';
 import {readStatus} from '../packages/operations/inspection.ts';
-import {githubFixture,localAuthority,context} from './helpers/github-fixture.mjs';
+import {githubFixture,localAuthority,context,planFor} from './helpers/github-fixture.mjs';
 const counts=f=>{const db=new DatabaseSync(join(f.root,'state.sqlite'));try{return Object.fromEntries(['requests','runs','workspaces','operations','outbox'].map(table=>[table,Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n)]));}finally{db.close();}};
 
 test('initial import is inert; a missed current transition admits one generation across concurrent workers and restart',async t=>{
@@ -129,4 +130,56 @@ test('explicit operator rebaseline is inert, requires authority and refuses any 
   const before=counts(f);
   assert.throws(()=>f.store.rebaselineGitHubItem('installation-a','test.provider','item-test',context,localAuthority),error=>error.code==='effect_blocked');
   assert.deepEqual(counts(f),before);
+});
+
+// Two real durable candidates: a new generation of an occupied issue must not
+// postpone an unrelated owner-approved issue in the same provider scope.
+test('issue_busy is durable per candidate and another issue starts in the same tick', async t => {
+  const f = await githubFixture(t, { buildPlan: (f, compiled) => (steps, observed) =>
+    planFor(f,compiled,`-${observed.event.subjectId}-${observed.generation}`)(steps,observed) });
+  const second = structuredClone(f.item); second.itemId='second-item'; second.subjectId='second-issue';
+  const events = structuredClone(f.events), items = new Map([[f.item.itemId,f.item],[second.itemId,second]]);
+  f.adapter.list = async () => ({items:[...items.values()].map(item=>structuredClone(item)),hasNextPage:false,endCursor:'two-items'});
+  f.adapter.item = async id => structuredClone(items.get(id) ?? null);
+  f.adapter.history = async id => ({schemaVersion:'1.0',events:structuredClone(id===second.subjectId?events:f.events),hasNextPage:false,endCursor:'two-histories'});
+  await f.worker.tick(); f.advance(); f.change(); await f.worker.tick(); assert.equal(f.store.runs().length,1);
+  const original=f.store.runs()[0];
+  f.advance(); f.change('wait-a'); await f.worker.tick();
+  f.advance(); f.change(); second.fields.request={present:true,value:'go-a'}; second.updatedAt=f.now();
+  events.push({id:'second-start',kind:'status',scopeId:'scope-a',actorId:context.actorId,occurredAt:f.now(),previousStatus:'Waiting',status:'Start'});
+  await f.worker.tick();
+  assert.equal(f.store.runs().length,2); assert.equal(f.store.get('run',original.id).id,original.id);
+  const status=readStatus(f.root), blocked=status.candidates.find(c=>c.issueId===f.item.subjectId);
+  assert.equal(blocked.code,'issue_busy'); assert.equal(blocked.attempts,1); assert.deepEqual(blocked.blockingRunIds,[original.id]);
+  assert.equal(f.store.githubStatus(f.key).lastError,null);
+  assert.equal(f.store.githubCandidates(f.key).length,0); // Backoff is independent of provider polling.
+  const reopened=startCoordinator(f.root,{policyAuthority:localAuthority,clock:{now:f.now}});
+  try { assert.deepEqual(readStatus(f.root).candidates,[blocked]); assert.equal(reopened.store.runs().length,2); }
+  finally { reopened.store.close(); }
+  f.advance(); await f.worker.tick(); assert.equal(f.store.runs().length,2);
+  assert.equal(readStatus(f.root).candidates[0].attempts,2);
+});
+
+test('more than one blocked admission batch cannot starve a later candidate',async t=>{
+  const f=await githubFixture(t,{buildPlan:(f,compiled)=>(steps,observed)=>planFor(f,compiled,`-${observed.event.subjectId}`)(steps,observed)});
+  const items=Array.from({length:18},(_,i)=>({...structuredClone(f.item),itemId:`item-${i}`,subjectId:`issue-${i}`}));
+  const histories=items.map(()=>structuredClone(f.events));
+  f.adapter.list=async()=>({items:structuredClone(items),hasNextPage:false,endCursor:'all'});
+  f.adapter.item=async id=>structuredClone(items.find(item=>item.itemId===id));
+  f.adapter.history=async id=>({schemaVersion:'1.0',events:structuredClone(histories[items.findIndex(item=>item.subjectId===id)]),hasNextPage:false,endCursor:'all'});
+  await f.worker.tick();await f.worker.tick();f.advance();
+  for(const [i,item]of items.entries()){
+    item.fields.request={present:true,value:'go-a'};item.updatedAt=f.now();
+    histories[i].push({id:`start-${i}`,kind:'status',scopeId:'scope-a',actorId:context.actorId,occurredAt:f.now(),previousStatus:'Waiting',status:'Start'});
+  }
+  const admit=f.store.admitGitHubCandidate.bind(f.store);
+  f.store.admitGitHubCandidate=(candidate,...rest)=>{
+    if(candidate.observation.event.subjectId!=='issue-17')throw new LifecycleError('issue_busy');
+    return admit(candidate,...rest);
+  };
+  await f.worker.tick();assert.equal(f.store.runs().length,0);
+  f.advance(3000);await f.worker.tick();
+  assert.equal(f.store.runs().length,1);
+  assert.equal(f.store.get('request',f.store.runs()[0].requestId).issueId,'issue-17');
+  assert.equal(readStatus(f.root).candidates.length,17);
 });
