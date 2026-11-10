@@ -40,7 +40,11 @@ export function createGitHubWorker(store: GitHubStore, options: GitHubOptions) {
               if(typeof itemId!=='string')throw new GitHubError('invalid_provider_data');
               if(blockedItems.has(itemId))continue;
               const fresh=await options.adapter.item(itemId);
-              store.admitGitHubCandidate(candidate,fresh,options);
+              try { store.admitGitHubCandidate(candidate,fresh,options); }
+              catch (error) {
+                if (!(error instanceof LifecycleError) || !['issue_busy','revision_conflict','capacity_wait','resource_busy','effect_blocked'].includes(error.code)) throw error;
+                store.retryGitHubCandidate(candidate,error.code as 'issue_busy' | 'revision_conflict' | 'capacity_wait' | 'resource_busy' | 'effect_blocked');
+              }
             }
           }catch(error){
             if(error instanceof LifecycleError&&error.code==='revision_conflict')continue;

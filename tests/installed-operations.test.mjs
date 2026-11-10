@@ -183,3 +183,29 @@ test('successful running observation resets consecutive read failures without re
   assert.equal(runtime.store.delivery(id).attempts, 0); assert.equal(runtime.store.delivery(id).lastError, null);
   assert.equal(runtime.store.get('operation', operation.id).state, 'running'); assert.equal(starts, 1); assert.equal(reads, 2);
 });
+
+test('activation catalog validates every configured model and effort, not only defaults', async()=>{
+  const {validateAgentCatalog}=await import('../packages/operations/diagnostics.ts');
+  const agent={defaults:{model:'default',reasoning:'high'},runtimeValues:{model:{default:'model-a',other:'model-b'},reasoning:{high:'high',low:'low'}}};
+  const catalog={models:[{model:'model-a',reasoning:['high','low']},{model:'model-b',reasoning:['low']}]};
+  validateAgentCatalog(agent,catalog);
+  assert.throws(()=>validateAgentCatalog(agent,{models:catalog.models.slice(0,1)}),/unsupported_agent_choice/);
+  assert.throws(()=>validateAgentCatalog(agent,{models:catalog.models.map(model=>({...model,reasoning:['high']}))}),/unsupported_agent_choice/);
+  assert.throws(()=>validateAgentCatalog({...agent,defaults:{model:'other',reasoning:'high'}},catalog),/agent_default_unsupported/);
+});
+
+test('activation rejects incomplete, orphan and invalid agent mappings before native effects',async()=>{
+  const {installationShape}=await import('../packages/operations/installation.ts');
+  const {readFileSync}=await import('node:fs');
+  const base=JSON.parse(readFileSync(new URL('../examples/operational-installation.json',import.meta.url)));
+  installationShape(base);
+  for(const change of [
+    spec=>{delete spec.agent.runtimeValues.model[spec.agent.defaults.model];},
+    spec=>{spec.agent.runtimeValues.model['unconfigured-option']='another-model';},
+    spec=>{spec.agent.runtimeValues.aiMode[spec.agent.defaults.aiMode]='automatic-approval';},
+  ]){
+    const spec=structuredClone(base);change(spec);
+    spec.lock.extensions.find(pin=>pin.id==='labstride.self-build').configuration.agent=spec.agent;
+    assert.throws(()=>installationShape(spec),error=>['invalid_payload','unsupported_agent_choice'].includes(error.code??error.message));
+  }
+});

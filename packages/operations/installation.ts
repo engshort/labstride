@@ -32,6 +32,9 @@ export function installationShape(spec: Installation) {
     new Set(['request', 'aiMode', 'model', 'reasoning', 'session', 'path'].map(name => fields[name].fieldId)).size !== 6) throw Error('installation_binding_invalid');
   for (const name of ['aiMode', 'model', 'reasoning'] as const) {
     const defaultId = spec.agent.defaults[name];
+    const values = Object.values(fields[name].options ?? {}), runtime = spec.agent.runtimeValues[name];
+    if (values.some(id => !Object.hasOwn(runtime,id)) || Object.keys(runtime).some(id => !values.includes(id)) ||
+      name === 'aiMode' && Object.values(runtime).some(value => !['plan','default','none'].includes(value))) throw Error('unsupported_agent_choice');
     if (!Object.values(fields[name].options ?? {}).includes(defaultId) || !Object.hasOwn(spec.agent.runtimeValues[name], defaultId)) throw Error('agent_default_invalid');
     const projection = config.projections.find(entry => entry.fact === `self-build.default-${name}`);
     if (!projection || projection.field !== name || fields[name].options?.[String(projection.value)] !== defaultId) throw Error('agent_default_invalid');

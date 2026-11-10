@@ -63,3 +63,27 @@ Require two independent issues/workspaces, duplicate Approved delivery, inert im
 The self-build canary is a new issue requesting `labstride version --json` with installed revision and Node version. It must produce actual code in the same session, correct fields, green checks and a reviewable PR. Issue #70 implements that bounded command with [documented release/development semantics](16-operations-and-cli.md). Its [local command evidence](evidence/W06-version-canary-2026-10-24.md) does not by itself establish native result publication, merged CI, or installed-service qualification. The earlier #68 unknown run, workspace and session remain preserved; this independent canary grants no replay authority.
 
 Pause new effects before backup/upgrade/restore. Retain the previous release and every pin needed by active runs. SQLite backup is implemented; automated restore/upgrade commands are not. Recovery must use the existing restore fencing plus independent reconciliation of external results before resumption. Stop the coordinator before both `recovery begin` and `recovery resume`; both commands require the service lock. The public v2 `serve --reconcile-only` mode is separate from this pilot's runtime qualification. Do not downgrade the database, reset it, remove unknown workspaces or self-upgrade. If live gates fail, keep the coordinator disabled/stopped and preserve state, checkouts and original outcomes for inspection.
+
+## Existing-session recovery and completion
+
+The checked native bridge accepts explicit `legacy` and `paginated` history for
+observation, cleanup observation and interruption. Initial creation/input retains
+the legacy and freshness restrictions. Full-view fallback, latest-turn rechecks,
+report journaling, filesystem/receipt identity and metadata-only reattachment
+remain required; missing history never authorizes another initial message.
+
+An exact durably acknowledged PR may be read before publication. Only a merged,
+closed PR matching its original number/node ID, run marker, both repository IDs,
+branches and latest ready-report SHA can produce succeeded, after another matching
+completed native-turn observation. This path does not push or create/update a PR.
+The normal executor acknowledges the original operation before run completion.
+
+New native threads can receive `repo · #number · issue title` names from the
+validated generated task header. Optional private naming receipts live under
+`reportDirectory/native-names/names.sqlite`; retain them with bridge state.
+Names are normalized and bounded to 200 Unicode code points. Body text cannot
+replace the header. Missing metadata and manual names are preserved. An uncertain
+name write is read-reconciled and never blindly resent; names cannot approve plans
+or grant task authority. The native name API has no atomic compare-and-set, so a
+simultaneous user rename between metadata read/write remains a documented limit.
+See the [regression evidence](evidence/W01-W02-W06-installation-recovery-2026-11-10.md).
