@@ -99,6 +99,28 @@ def ensure_user(name, home):
         return pwd.getpwnam(name)
 
 
+def enroll_existing_checkout(spec, layout, coding):
+    value = spec['agent'].get('existingCheckout')
+    if value is None:
+        return None
+    if layout.name is None or spec['configuration']['limits']['activeRuns'] != 1 or len(spec['policy']['repositories']) != 1:
+        raise RuntimeError('existing_checkout_requires_single_named_installation')
+    checkout = Path(value)
+    no_links(checkout / '.git')
+    if not checkout.is_absolute() or str(checkout.resolve(strict=True)) != value or any(
+            checkout.is_relative_to(root) or root.is_relative_to(checkout) for root in (layout.state, layout.source_root, layout.config)):
+        raise RuntimeError('existing_checkout_invalid')
+
+    def identity(path):
+        info = path.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != coding.pw_uid:
+            raise RuntimeError('existing_checkout_invalid')
+        return {'device': info.st_dev, 'inode': info.st_ino, 'uid': info.st_uid}
+
+    return {'path': value, 'baseBranch': spec['baseBranch'], 'repository': spec['policy']['repositories'][0]['name'],
+            'checkout': identity(checkout), 'gitDirectory': identity(checkout / '.git')}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bundle', type=Path, required=True)
@@ -142,6 +164,7 @@ def install(args, layout):
             raise RuntimeError('incomplete_release')
     spec = json.loads(args.configuration.read_text())
     coding = pwd.getpwnam(args.coding_user)
+    existing_checkout = enroll_existing_checkout(spec, layout, coding)
     if spec['configuration']['enabled']:
         raise RuntimeError('bootstrap_must_be_disabled')
     if args.dry_run:
@@ -265,8 +288,14 @@ def install(args, layout):
     spec['configuration']['targets'][target_id] = {'connector': 'labstride.connector.ssh', 'configuration': connector_configuration}
     for projection in spec['configuration']['projections']:
         value = projection.get('valueFrom', {})
+        if existing_checkout and projection['fact'] == 'workspace.ready' and projection['field'] == 'request' and not value:
+            projection['fact'] = 'self-build.checkout-ready'
         if value.get('kind') == 'workspace-source-path' and (value.get('targetId'), value.get('rootId')) == (target_id, root_id):
-            value['rootPath'] = str(source_root)
+            if existing_checkout and projection['field'] == 'path':
+                del projection['valueFrom']
+                projection.update(fact='self-build.checkout-ready', value=existing_checkout['path'])
+            else:
+                value['rootPath'] = str(source_root)
     for pin in spec['lock']['extensions']:
         package = {'labstride.connector.ssh': 'connector-ssh', 'labstride.workspace-create': 'action-workspace-create', 'labstride.self-build': 'action-self-build', 'labstride.github.native': 'provider-github'}[pin['id']]
         artifact = release / 'artifacts' / (package + '.json')
@@ -286,6 +315,8 @@ def install(args, layout):
                      'sourceRoot': str(source_root), 'helperUid': helper.pw_uid, 'stateDirectory': str(bridge_runtime), 'reportDirectory': str(report_directory)}
     if layout.name is not None:
         bridge_policy['installationId'] = spec['configuration']['installationId']
+    if existing_checkout:
+        bridge_policy['existingCheckout'] = existing_checkout
     managed_file(bridge_config, (json.dumps(bridge_policy, indent=2) + '\n').encode(), gid=bridge_gid, mode=0o640)
     cli = release / 'apps/cli/main.ts'
     coordinator_unit = f'''[Unit]

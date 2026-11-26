@@ -119,6 +119,7 @@ export async function checkInstallation(spec: Installation, runtime = true, opti
       try {
         const catalog = options.catalog ? await options.catalog() : await new BridgeClient(spec.agent.bridgeSocket).call({ schemaVersion: '1.0', method: 'catalog' });
         if (catalog.backendVersion !== spec.agent.backendVersion) throw Error('backend_version_mismatch');
+        if (catalog.existingCheckout !== spec.agent.existingCheckout) throw Error('identity_mismatch');
         const model = spec.agent.runtimeValues.model[spec.agent.defaults.model], reasoning = spec.agent.runtimeValues.reasoning[spec.agent.defaults.reasoning];
         if (!catalog.models?.some((entry: any) => entry.model === model && entry.reasoning.includes(reasoning))) throw Error('agent_default_unsupported');
         add('session_catalog_observed', '/agent', 'Backend version and model catalog responded. This does not verify authentication, client continuity or atomic human guards.', 'info', 'observed');

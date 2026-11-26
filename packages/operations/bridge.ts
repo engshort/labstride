@@ -11,10 +11,12 @@ import type { ManagedCodingResultV1 } from '../../contracts/generated/managed-re
 import { digest } from '../configuration/json.ts';
 import { ReportJournal } from './report-journal.ts';
 import { assertSeparate } from '../storage-sqlite/paths.ts';
+import { existingCheckout, type ExistingCheckoutPolicy } from './existing-checkout.ts';
 
 const maxWire = 24 * 1024 * 1024;
-export interface BridgeBinding { runId: string; workspaceId: string; path: string; receiptDigest: string }
-export interface BridgeRequest { schemaVersion: '1.0'; method: 'catalog' | 'start' | 'turn' | 'observe' | 'bundle' | 'interrupt' | 'cleanup-observe';
+export interface BridgeBinding { runId: string; workspaceId: string; path: string; receiptDigest: string; workingPath?: string }
+export interface BridgeRequest { schemaVersion: '1.0'; method: 'catalog' | 'start' | 'turn' | 'observe' | 'bundle' | 'interrupt' | 'cleanup-observe' |
+  'checkout-probe' | 'checkout-prepare' | 'checkout-inspect';
   binding?: BridgeBinding; sessionId?: string; parameters?: Record<string, unknown> }
 export interface BridgePort { call(request: BridgeRequest): Promise<any> }
 export class BridgeClient implements BridgePort {
@@ -35,18 +37,25 @@ export class BridgeClient implements BridgePort {
 }
 
 export interface BridgePolicy { schemaVersion: '1.0'; socket: string; backendSocket: string; backendVersion: string;
-  sourceRoot: string; helperUid: number; stateDirectory: string; reportDirectory?: string; installationId?: string }
+  sourceRoot: string; helperUid: number; stateDirectory: string; reportDirectory?: string; installationId?: string;
+  existingCheckout?: ExistingCheckoutPolicy }
 // All Git here executes as the coding user and has no installation credentials.
 function codingGit(path: string, args: string[]): string {
   return execFileSync('/usr/bin/git', ['-c', `safe.directory=${path}`, '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'diff.external=', ...args], {
     cwd: path, encoding: 'utf8', timeout: 30000, maxBuffer: 65536,
-    env: { PATH: '/usr/bin:/bin', HOME: '/', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: '/usr/bin:/bin', HOME: '/', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 }
 export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(policy.backendSocket, 15000)) {
   const bindings = new Map<string, BridgeBinding>();
   const reportDirectory = policy.reportDirectory ?? policy.stateDirectory;
   assertSeparate(join(reportDirectory, 'managed-reports'), policy.sourceRoot);
+  const checkout = policy.existingCheckout ? existingCheckout(policy.existingCheckout, codingGit) : undefined;
+  if (policy.existingCheckout) {
+    if (!policy.installationId || !policy.reportDirectory) throw Error('configuration_invalid');
+    assertSeparate(reportDirectory, policy.existingCheckout.path);
+    assertSeparate(policy.sourceRoot, policy.existingCheckout.path);
+  }
   const reports = new ReportJournal(reportDirectory);
   let initialized: Promise<void> | undefined;
   // A new thread has no pageable rollout until its first user message. This
@@ -76,6 +85,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
     let success = false;
     try {
       const binding = bindings.get(message.params.threadId)!;
+      if (checkout) checkout.active(workspace(binding));
       reports.record(binding, message.params.callId, { ...message.params.arguments, runId: binding.runId,
         sessionId: message.params.threadId, turnId: message.params.turnId });
       success = true;
@@ -92,7 +102,8 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
   }
   function workspace(binding: BridgeBinding) {
     if (!binding || !/^[a-z0-9_.:-]{1,256}$/i.test(binding.runId) || !/^[a-z0-9_.:-]{1,256}$/i.test(binding.workspaceId)) throw Error('identity_mismatch');
-    if (!binding.path.startsWith(policy.sourceRoot + '/') || !/^ws-[a-f0-9]{40}\/source$/.test(binding.path.slice(policy.sourceRoot.length + 1)) || realpathSync(binding.path) !== binding.path) throw Error('identity_mismatch');
+    if (binding.workingPath !== policy.existingCheckout?.path || !binding.path.startsWith(policy.sourceRoot + '/') ||
+      !/^ws-[a-f0-9]{40}\/source$/.test(binding.path.slice(policy.sourceRoot.length + 1)) || realpathSync(binding.path) !== binding.path) throw Error('identity_mismatch');
     const markerPath = join(dirname(binding.path), 'workspace.json');
     const receipt = validated('ssh-workspace-receipt', JSON.parse(readProtected(markerPath, policy.helperUid).toString('utf8')));
     if ((policy.installationId !== undefined && receipt.installationId !== policy.installationId) ||
@@ -108,7 +119,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
   }
   async function readThread(binding: BridgeBinding, sessionId: string) {
     const { thread } = await rpc.call('thread/read', { threadId: sessionId, includeTurns: false });
-    if (thread?.id !== sessionId || thread.cwd !== binding.path || thread.source?.subAgent || thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+    if (thread?.id !== sessionId || thread.cwd !== (binding.workingPath ?? binding.path) || thread.source?.subAgent || thread.historyMode !== 'legacy') throw Error('identity_mismatch');
     return thread;
   }
   async function observe(binding: BridgeBinding, sessionId: string, allowFresh = false) {
@@ -125,7 +136,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
       // activity witness covers this empty-thread case only; it is never a
       // general inference that unavailable history means empty history.
       const { thread: latest } = await rpc.call('thread/read', { threadId: sessionId, includeTurns: false });
-      if (fresh.get(sessionId) !== freshBinding(binding) || latest?.id !== sessionId || latest.cwd !== binding.path ||
+      if (fresh.get(sessionId) !== freshBinding(binding) || latest?.id !== sessionId || latest.cwd !== (binding.workingPath ?? binding.path) ||
         latest.status?.type !== 'idle' || latest.preview !== '' || latest.source?.subAgent) throw Error('stale_revision');
       history = { data: [] };
     }
@@ -154,7 +165,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
       const latest = await rpc.call('thread/turns/list', { threadId: sessionId, limit: 1, sortDirection: 'desc', itemsView: 'summary' });
       if (!Array.isArray(latest.data) || latest.data.length !== 1 || latest.data[0]?.id !== turn.id || latest.data[0]?.status !== 'completed') throw Error('stale_revision');
     }
-    return { sessionId, path: binding.path, turn, state: thread.status?.type ?? 'unknown', report };
+    return { sessionId, path: binding.workingPath ?? binding.path, turn, state: thread.status?.type ?? 'unknown', report };
   }
   return {
     async call(request: BridgeRequest): Promise<any> {
@@ -163,16 +174,27 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
       if (request.method === 'catalog') {
         const result = await rpc.call('model/list', { limit: 100, includeHidden: false });
         if (!Array.isArray(result.data) || result.nextCursor) throw Error('catalog_truncated');
-        return { backendVersion: policy.backendVersion, models: result.data.map((m: any) => ({ model: m.model, reasoning: m.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort) })) };
+        return { backendVersion: policy.backendVersion, models: result.data.map((m: any) => ({ model: m.model, reasoning: m.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort) })),
+          ...(checkout ? { existingCheckout: checkout.verify() } : {}) };
       }
       const binding = request.binding!, receipt = workspace(binding), parameters = request.parameters ?? {};
+      if (request.method === 'checkout-probe') {
+        if (!checkout) throw Error('configuration_invalid');
+        checkout.probe(receipt);
+        return { cwd: binding.workingPath };
+      }
+      if (request.method === 'checkout-prepare' || request.method === 'checkout-inspect') {
+        if (!checkout) throw Error('configuration_invalid');
+        return request.method === 'checkout-prepare' ? checkout.prepare(receipt, binding.path) : checkout.inspect(receipt);
+      }
+      const cwd = checkout?.active(receipt) ?? binding.path;
       if (request.method === 'bundle') {
         if (typeof parameters.sha !== 'string' || !/^[a-f0-9]{40}$/.test(parameters.sha)) throw Error('validation_failed');
-        if (codingGit(binding.path, ['rev-parse', 'HEAD']) !== parameters.sha || codingGit(binding.path, ['symbolic-ref', '--short', 'HEAD']) !== receipt.branch ||
-          codingGit(binding.path, ['status', '--porcelain=v1', '--untracked-files=all'])) throw Error('checkout_not_publishable');
+        if (codingGit(cwd, ['rev-parse', 'HEAD']) !== parameters.sha || codingGit(cwd, ['symbolic-ref', '--short', 'HEAD']) !== receipt.branch ||
+          codingGit(cwd, ['status', '--porcelain=v1', '--untracked-files=all'])) throw Error('checkout_not_publishable');
         const temp = mkdtempSync(join(tmpdir(), 'labstride-bundle-'));
         try {
-          codingGit(binding.path, ['bundle', 'create', join(temp, 'commit.bundle'), 'HEAD']);
+          codingGit(cwd, ['bundle', 'create', join(temp, 'commit.bundle'), 'HEAD']);
           const bytes = readFileSync(join(temp, 'commit.bundle')); if (bytes.length > 16 * 1024 * 1024) throw Error('bundle_too_large');
           return { sha: parameters.sha, branch: receipt.branch, baseSha: receipt.source.sha, bundle: bytes.toString('base64') };
         } finally { rmSync(temp, { recursive: true }); }
@@ -180,16 +202,18 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
       if (request.method === 'start') {
         if (Object.keys(parameters).some(key => !['model'].includes(key)) || typeof parameters.model !== 'string') throw Error('validation_failed');
         const startEpoch = witnessEpoch;
-        const result = await rpc.call('thread/start', { cwd: binding.path, model: parameters.model, historyMode: 'legacy', sandbox: 'workspace-write',
+        const result = await rpc.call('thread/start', { cwd, model: parameters.model, historyMode: 'legacy', sandbox: 'workspace-write',
           approvalPolicy: 'on-request', approvalsReviewer: 'user', allowProviderModelFallback: false, ephemeral: false,
           serviceName: 'labstride', dynamicTools: [{ name: 'labstride_report', description: 'Report a committed result for independent Labstride PR validation. Never grants approval or deployment authority.', inputSchema: reportSchema }] });
-        if (!result.thread?.id || result.thread.cwd !== binding.path || result.thread.source?.subAgent || result.thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+        if (!result.thread?.id || result.thread.cwd !== cwd || result.thread.source?.subAgent || result.thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+        if (checkout) reports.registerCheckoutSession(binding, result.thread.id);
         bindSession(result.thread.id, binding);
         if (startEpoch === witnessEpoch && !activity.has(result.thread.id)) fresh.set(result.thread.id, freshBinding(binding));
         return { thread: { id: result.thread.id, cwd: result.thread.cwd } };
       }
       const sessionId = request.sessionId;
       if (!sessionId || !/^[a-z0-9-]{1,128}$/i.test(sessionId)) throw Error('identity_mismatch');
+      if (checkout) reports.verifyCheckoutSession(binding, sessionId);
       if (request.method === 'cleanup-observe') {
         // Read metadata only. No resume, report recovery, turn or interrupt.
         const read = async () => {
@@ -201,7 +225,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         };
         const first=await read(), second=await read();
         if(digest(first)!==digest(second))throw Error('stale_revision');
-        return validated('managed-cleanup-observation',{schemaVersion:'1.0',runId:binding.runId,workspaceId:binding.workspaceId,sessionId,path:binding.path,...second,observedAt:new Date().toISOString()});
+        return validated('managed-cleanup-observation',{schemaVersion:'1.0',runId:binding.runId,workspaceId:binding.workspaceId,sessionId,path:cwd,...second,observedAt:new Date().toISOString()});
       }
       if (!['observe', 'interrupt', 'turn'].includes(request.method)) throw Error('validation_failed');
       const before = await observe(binding, sessionId, request.method === 'turn' && parameters.expectedTurnId === null);

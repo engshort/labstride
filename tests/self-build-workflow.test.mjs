@@ -20,11 +20,12 @@ import { createCodexBridge } from '../packages/operations/bridge.ts';
 import { backupDatabase } from '../packages/operations/runtime.ts';
 import { cli } from '../apps/cli/main.ts';
 import { startCoordinator } from '../apps/coordinator/main.ts';
+import { directoryIdentity } from '../packages/target-helper/filesystem.ts';
 
 // Real checkout, bundle verification, local Git push and SQLite sequencing.
 // GitHub and Codex wire responses are controlled peers, not live qualification.
 async function setup(t, { losePrReply = false, loseStartReply = false, supported = true, nativeReports = false, losePushReply = false,
-  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog } = {}) {
+  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog, useExistingCheckout = false, loseCheckoutReply = false } = {}) {
   // The in-process helper and coordinator must share the fixture's clock;
   // otherwise its fixed one-day request expires with the real calendar.
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T12:00:00.000Z') });
@@ -35,6 +36,13 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       defaults: { aiMode: 'mode-plan', model: 'model-test', reasoning: 'reason-medium' },
       runtimeValues: { aiMode: { 'mode-plan': 'plan', 'mode-none': 'none' }, model: { 'model-test': 'test-model' }, reasoning: { 'reason-medium': 'medium' } } } };
   if (modelProfile) options.agent = { ...modelProfile.agent, bridgeSocket: '/unused' };
+  if (useExistingCheckout) {
+    const path = join(source.root, 'lab-checkout');
+    runGit(source.root, ['-c', 'protocol.file.allow=always', 'clone', '--no-hardlinks', source.repository, path]);
+    runGit(path, ['remote', 'set-url', 'origin', 'https://github.com/example/source.git']);
+    runGit(path, ['switch', '-C', 'main', source.operation.source.sha]);
+    options.agent.existingCheckout = path;
+  }
   const models = Object.entries(modelCatalog ?? { 'test-model': supported ? ['medium'] : [] })
     .map(([model, reasoning]) => ({ model, reasoning }));
   const pins = [];
@@ -61,6 +69,11 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       ...['testing','review'].map(name => ({ fact: `self-build.${name}`, field: 'status', value: name })),
       ...Object.keys(options.agent.defaults).map(name => ({ fact: `self-build.default-${name}`, field: name, value: 'default' })),
     ];
+    if (options.agent.existingCheckout) {
+      f.config.fields.path = { source: 'organization_issue_field', scopeId: 'scope-a', fieldId: 'path', type: 'string' };
+      f.descriptors.path = { ...f.descriptors['note-a'], fieldId: 'path', scopeId: 'scope-a', source: 'organization_issue_field' };
+      f.config.projections.push({ fact: 'self-build.checkout-ready', field: 'path', value: options.agent.existingCheckout });
+    }
     for (const packageName of ['action-workspace-create', 'action-self-build']) {
       const artifactPath = join(f.root, packageName + '.json');
       execFileSync(process.execPath, ['scripts/package_extension.mjs', 'packages/' + packageName, artifactPath]);
@@ -76,6 +89,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     ];
   }, buildPlan(_f, compiled) { return (steps, observed) => workspaceStart(compiled, steps, observed); } });
   f.item.fields.session = { present: false };
+  if (useExistingCheckout) f.item.fields.path = { present: false };
   for (const name of ['aiMode','model','reasoning']) f.item.fields[name] = { present: true, value: options.agent.defaults[name] };
   await f.worker.tick(); f.advance(); f.change(); await f.worker.tick();
   const run = f.store.runs()[0]; assert(run);
@@ -84,10 +98,11 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
   });
   const checkoutWorker = createWorker(f.store, { executorId: 'checkout', nextAttempt: () => crypto.randomUUID(), adapters: new Map([[actionKey(pins[0].id, pins[0].version), loaded.instance]]) });
   await checkoutWorker.tick(); await checkoutWorker.drain();
-  const workspace = f.store.workspace(run.id), cwd = join(options.sourceRoot, workspace.locator, 'source');
+  const workspace = f.store.workspace(run.id), cwd = options.agent.existingCheckout ?? join(options.sourceRoot, workspace.locator, 'source');
   f.store.advanceWorkflows(f.dependencies.host); assert.equal(f.store.operations(run.id).length, 2);
   const op = f.store.operations(run.id)[1].request, state = { starts: 0, turns: 0, latest: { id: 'initial', status: 'completed' }, report: null, creates: 0, pr: null, loss: losePrReply, startLoss: loseStartReply,
-    pushes: 0, credentialReads: 0, pushLoss: losePushReply, prepareFailure, headConflict: false, readyLoss: loseReadyReply, readies: 0, changeTurnOnBundle: false, greenSha: null };
+    pushes: 0, credentialReads: 0, pushLoss: losePushReply, prepareFailure, headConflict: false, readyLoss: loseReadyReply, readies: 0, changeTurnOnBundle: false,
+    greenSha: null, checkoutPrepares: 0, checkoutInspections: 0 };
   const remote = join(source.root, 'published.git'); runGit(source.root, ['-c', 'protocol.file.allow=always', 'clone', '--bare', '--no-hardlinks', source.repository, remote]);
   const branchSha = () => runGit(remote, ['rev-parse', `refs/heads/${workspace.branch}`]);
   const git = args => runGit(cwd, ['-c', `safe.directory=${cwd}`, ...args]);
@@ -120,9 +135,17 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       if (method === 'turn/start') { state.turns++; state.latest = { id: 'initial', status: 'completed' }; return { turn: state.latest }; }
       throw Error('unexpected_native_method');
     } };
-    bridge = createCodexBridge({ schemaVersion: '1.0', socket: join(f.root, 'native-bridge.sock'), backendSocket: '/unused', backendVersion: options.agent.backendVersion,
-      sourceRoot: options.sourceRoot, helperUid: process.getuid(), stateDirectory: f.root }, nativeRpc);
-    t.after(() => bridge.close());
+    const nativeBridge = createCodexBridge({ schemaVersion: '1.0', socket: join(f.root, 'native-bridge.sock'), backendSocket: '/unused', backendVersion: options.agent.backendVersion,
+      sourceRoot: options.sourceRoot, helperUid: process.getuid(), stateDirectory: f.root, reportDirectory: f.root, installationId: 'installation-a',
+      ...(useExistingCheckout ? { existingCheckout: { path: cwd, repository: source.operation.source.repository, baseBranch: 'main',
+        checkout: directoryIdentity(cwd), gitDirectory: directoryIdentity(join(cwd, '.git')) } } : {}) }, nativeRpc);
+    bridge = { async call(request) {
+      const response = await nativeBridge.call(request);
+      if (request.method === 'checkout-prepare' && ++state.checkoutPrepares === 1 && loseCheckoutReply) throw Error('outcome_unknown');
+      if (request.method === 'checkout-inspect') state.checkoutInspections++;
+      return response;
+    } };
+    t.after(() => nativeBridge.close());
   }
   const rest = { reference: 'secret:repository', credential: async () => { state.credentialReads++; return 'synthetic'; }, async request(method, path, input) {
     if (path.includes('/git/ref/')) {
@@ -299,6 +322,28 @@ test('a prior green head cannot advance a new PR head after reopening the coordi
   assert.equal(f.item.fields.status.value, 'review-a');
   assert.equal(recovered.runs().length, 1);
   assert.deepEqual([f.state.starts, f.state.turns, f.state.pushes, f.state.creates, f.state.readies], [1, 1, 2, 1, 1]);
+});
+
+test('an existing checkout survives a lost preparation reply and publishes from the exact registered Codex path', async t => {
+  const f = await setup(t, { nativeReports: true, useExistingCheckout: true, loseCheckoutReply: true });
+  for (let i = 0; i < 8 && !f.state.checkoutPrepares; i++) await f.tick();
+  assert.equal(f.state.checkoutPrepares, 1);
+  assert.equal(f.state.starts, 0);
+  assert.equal(f.item.fields.path.present, false);
+  const store = f.restart();
+  for (let i = 0; i < 8 && !f.state.turns; i++) await f.tick();
+  assert.equal(f.state.checkoutPrepares, 1);
+  assert.equal(f.state.checkoutInspections, 1);
+  assert.equal(f.item.fields.path.value, f.cwd);
+  assert.equal(store.managedSession(f.run.id).path, f.cwd);
+  assert.equal(f.nativeCalls.find(entry => entry.method === 'thread/start').params.cwd, f.cwd);
+
+  f.commit('work-visible-in-lab.txt');
+  assert.equal(readFileSync(join(f.cwd, 'work-visible-in-lab.txt'), 'utf8'), 'implemented\n');
+  for (let i = 0; i < 8 && f.item.fields.status.value !== 'review-a'; i++) await f.tick();
+  assert.equal(f.item.fields.status.value, 'review-a');
+  assert.equal(f.state.pr.head.sha, f.state.report.commitSha);
+  assert.deepEqual([f.state.starts, f.state.turns, f.state.pushes, f.state.creates], [1, 1, 1, 1]);
 });
 
 test('a lost PR creation response adopts exact independent PR evidence without creating a second PR', async t => {

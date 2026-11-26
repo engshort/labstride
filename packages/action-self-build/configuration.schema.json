@@ -21,6 +21,11 @@
           "minLength": 1,
           "maxLength": 1024
         },
+        "existingCheckout": {
+          "type": "string",
+          "pattern": "^/",
+          "maxLength": 4096
+        },
         "checkedDelivery": {
           "const": true
         },

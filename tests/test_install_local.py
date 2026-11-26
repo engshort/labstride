@@ -16,6 +16,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LocalInstallerIsolation(TestCase):
+    def test_existing_checkout_enrollment_pins_both_directory_identities(self):
+        with TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / 'checkout'
+            git = checkout / '.git'
+            git.mkdir(parents=True)
+            spec = json.loads((ROOT / 'examples/operational-installation.json').read_text())
+            spec['agent']['existingCheckout'] = str(checkout)
+            spec['configuration']['limits']['activeRuns'] = 1
+            coding = Namespace(pw_uid=os.getuid())
+            with self.assertRaisesRegex(RuntimeError, 'existing_checkout_requires_single_named_installation'):
+                installer.enroll_existing_checkout(spec, installer.InstanceLayout(None), coding)
+            policy = installer.enroll_existing_checkout(spec, installer.InstanceLayout('other'), coding)
+            self.assertEqual(policy['checkout']['inode'], checkout.stat().st_ino)
+            self.assertEqual(policy['gitDirectory']['inode'], git.stat().st_ino)
+            git.rename(checkout / '.real-git')
+            git.symlink_to(checkout / '.real-git', target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, 'symlink_path_preserved'):
+                installer.enroll_existing_checkout(spec, installer.InstanceLayout('other'), coding)
+
     def test_named_bootstrap_preserves_the_original_installation(self):
         with TemporaryDirectory() as temporary:
             self.check_installations(Path(temporary))
