@@ -739,6 +739,7 @@ Specification: [22-api-and-schema-reference.md](22-api-and-schema-reference.md).
 
 - Start/resume/observe/send/interrupt/close preserve provider identity, reject stale human/turn revisions and explicitly report missing atomic backend guards.
 - Optional hooks are correlated, deduplicated observations with backend reconciliation when missing; the existing interactive client resumes the same enrolled session, not a substituted daemon.
+- Managed Codex startup sends the configured model and reasoning effort only when the enrolled backend advertises that combination.
 
 Verification evidence: evidence/W01.4-installed-sessions-2026-10-23.md, evidence/W01.4-backend-upgrade-2026-10-23.md, evidence/W01.4-client-continuity-2026-10-23.md, evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W04-W06-native-history-2026-10-24.md, evidence/W04-W06-report-journal-2026-10-24.md, evidence/W04-W06-bounded-report-observation-2026-10-24.md
 

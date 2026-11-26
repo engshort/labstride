@@ -52,7 +52,8 @@
         "fieldId": "field-model",
         "type": "single-select",
         "options": {
-          "default": "model-default"
+          "default": "model-default",
+          "astra": "model-astra"
         }
       },
       "reasoning": {
@@ -296,7 +297,7 @@
           "agent": {
             "bridgeSocket": "/run/labstride-bridge/control.sock",
             "backendIdentity": "existing-operator-codex",
-            "backendVersion": "0.163.0",
+            "backendVersion": "0.172.0",
             "checkedDelivery": true,
             "defaults": {
               "aiMode": "aiMode-default",
@@ -308,7 +309,8 @@
                 "aiMode-default": "plan"
               },
               "model": {
-                "model-default": "example-model"
+                "model-default": "gpt-6.2-sol",
+                "model-astra": "gpt-6.2-astra"
               },
               "reasoning": {
                 "reasoning-default": "medium"
@@ -391,7 +393,7 @@
   "agent": {
     "bridgeSocket": "/run/labstride-bridge/control.sock",
     "backendIdentity": "existing-operator-codex",
-    "backendVersion": "0.163.0",
+    "backendVersion": "0.172.0",
     "checkedDelivery": true,
     "defaults": {
       "aiMode": "aiMode-default",
@@ -403,7 +405,8 @@
         "aiMode-default": "plan"
       },
       "model": {
-        "model-default": "example-model"
+        "model-default": "gpt-6.2-sol",
+        "model-astra": "gpt-6.2-astra"
       },
       "reasoning": {
         "reasoning-default": "medium"
