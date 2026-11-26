@@ -35,7 +35,7 @@ export class BridgeClient implements BridgePort {
 }
 
 export interface BridgePolicy { schemaVersion: '1.0'; socket: string; backendSocket: string; backendVersion: string;
-  sourceRoot: string; helperUid: number; stateDirectory: string; reportDirectory?: string }
+  sourceRoot: string; helperUid: number; stateDirectory: string; reportDirectory?: string; installationId?: string }
 // All Git here executes as the coding user and has no installation credentials.
 function codingGit(path: string, args: string[]): string {
   return execFileSync('/usr/bin/git', ['-c', `safe.directory=${path}`, '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'diff.external=', ...args], {
@@ -95,14 +95,26 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
     if (!binding.path.startsWith(policy.sourceRoot + '/') || !/^ws-[a-f0-9]{40}\/source$/.test(binding.path.slice(policy.sourceRoot.length + 1)) || realpathSync(binding.path) !== binding.path) throw Error('identity_mismatch');
     const markerPath = join(dirname(binding.path), 'workspace.json');
     const receipt = validated('ssh-workspace-receipt', JSON.parse(readProtected(markerPath, policy.helperUid).toString('utf8')));
-    if (digest(receipt) !== binding.receiptDigest || receipt.runId !== binding.runId || receipt.workspaceId !== binding.workspaceId ||
+    if ((policy.installationId !== undefined && receipt.installationId !== policy.installationId) ||
+      digest(receipt) !== binding.receiptDigest || receipt.runId !== binding.runId || receipt.workspaceId !== binding.workspaceId ||
       !sameIdentity(directoryIdentity(binding.path), receipt.checkoutIdentity)) throw Error('identity_mismatch');
     accessSync(binding.path, constants.W_OK);
     return receipt;
   }
-  async function observe(binding: BridgeBinding, sessionId: string, allowFresh = false) {
+  function bindSession(sessionId: string, binding: BridgeBinding) {
+    const existing = bindings.get(sessionId);
+    if (existing && digest(existing) !== digest(binding)) throw Error('identity_mismatch');
+    bindings.set(sessionId, binding);
+  }
+  async function readThread(binding: BridgeBinding, sessionId: string) {
     const { thread } = await rpc.call('thread/read', { threadId: sessionId, includeTurns: false });
     if (thread?.id !== sessionId || thread.cwd !== binding.path || thread.source?.subAgent || thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+    return thread;
+  }
+  async function observe(binding: BridgeBinding, sessionId: string, allowFresh = false) {
+    const thread = await readThread(binding, sessionId);
+    // Only a verified native thread may route a later report to this receipt.
+    bindSession(sessionId, binding);
     let history;
     try { history = await rpc.call('thread/turns/list', { threadId: sessionId, limit: 1, sortDirection: 'desc', itemsView: 'summary' }); }
     catch (error: any) {
@@ -171,19 +183,17 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         const result = await rpc.call('thread/start', { cwd: binding.path, model: parameters.model, historyMode: 'legacy', sandbox: 'workspace-write',
           approvalPolicy: 'on-request', approvalsReviewer: 'user', allowProviderModelFallback: false, ephemeral: false,
           serviceName: 'labstride', dynamicTools: [{ name: 'labstride_report', description: 'Report a committed result for independent Labstride PR validation. Never grants approval or deployment authority.', inputSchema: reportSchema }] });
-        if (!result.thread?.id || result.thread.cwd !== binding.path || result.thread.historyMode !== 'legacy') throw Error('identity_mismatch');
-        bindings.set(result.thread.id, binding);
+        if (!result.thread?.id || result.thread.cwd !== binding.path || result.thread.source?.subAgent || result.thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+        bindSession(result.thread.id, binding);
         if (startEpoch === witnessEpoch && !activity.has(result.thread.id)) fresh.set(result.thread.id, freshBinding(binding));
         return { thread: { id: result.thread.id, cwd: result.thread.cwd } };
       }
       const sessionId = request.sessionId;
       if (!sessionId || !/^[a-z0-9-]{1,128}$/i.test(sessionId)) throw Error('identity_mismatch');
-      bindings.set(sessionId, binding);
       if (request.method === 'cleanup-observe') {
         // Read metadata only. No resume, report recovery, turn or interrupt.
         const read = async () => {
-          const {thread} = await rpc.call('thread/read',{threadId:sessionId,includeTurns:false});
-          if(thread?.id!==sessionId || thread.cwd!==binding.path || thread.source?.subAgent || thread.historyMode!=='legacy') throw Error('identity_mismatch');
+          const thread = await readThread(binding, sessionId);
           const history = await rpc.call('thread/turns/list',{threadId:sessionId,limit:1,sortDirection:'desc',itemsView:'summary'});
           if(!Array.isArray(history.data)||history.data.length>1)throw Error('history_unavailable');
           const turn=history.data[0];
@@ -193,6 +203,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         if(digest(first)!==digest(second))throw Error('stale_revision');
         return validated('managed-cleanup-observation',{schemaVersion:'1.0',runId:binding.runId,workspaceId:binding.workspaceId,sessionId,path:binding.path,...second,observedAt:new Date().toISOString()});
       }
+      if (!['observe', 'interrupt', 'turn'].includes(request.method)) throw Error('validation_failed');
       const before = await observe(binding, sessionId, request.method === 'turn' && parameters.expectedTurnId === null);
       if (request.method === 'observe') {
         // Metadata-only reattachment preserves the app's current settings.

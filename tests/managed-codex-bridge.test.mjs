@@ -9,6 +9,7 @@ import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ReportJournal } from '../packages/operations/report-journal.ts';
+import { requestDigest } from '../packages/storage-sqlite/execution.ts';
 import { UnixRpc } from '../packages/session-codex/index.mjs';
 import { socketServer } from './helpers/codex-socket.mjs';
 
@@ -37,7 +38,7 @@ async function fixture(t) {
     sourceRoot: f.policy.roots[0].path, helperUid: process.getuid(), stateDirectory: f.root };
   const bridge = createCodexBridge(policy, rpc);
   t.after(() => bridge.close());
-  return { ...f, receipt, binding, requests, frames, state, bridge, rpc, policy };
+  return { ...f, registry, receipt, binding, requests, frames, state, bridge, rpc, policy };
 }
 
 test('managed bridge validates original filesystem receipt and starts one configured native thread', async t => {
@@ -50,6 +51,44 @@ test('managed bridge validates original filesystem receipt and starts one config
   assert.equal(request.params.dynamicTools[0].name, 'labstride_report');
   await assert.rejects(f.bridge.call({ schemaVersion: '1.0', method: 'start', binding: { ...f.binding, receiptDigest: '0'.repeat(64) }, parameters: { model: 'test-model' } }), /identity_mismatch/);
   assert.equal(f.requests.filter(request => request.method === 'thread/start').length, 1);
+});
+
+test('a rejected session observation never reroutes an acknowledged report', async t => {
+  const f = await fixture(t);
+  const secondRequest = structuredClone(f.request);
+  for (const key of ['runId', 'workspaceId', 'operationId']) secondRequest.operation[key] += ':second';
+  secondRequest.requestId = secondRequest.operation.operationId;
+  secondRequest.operation.requestDigest = requestDigest(secondRequest.operation);
+  const response = await f.registry.handle(secondRequest);
+  assert.equal(response.outcome, 'ok');
+  const { runId, workspaceId } = response.workspace;
+  const second = { runId, workspaceId, path: f.sourcePath(response.workspace), receiptDigest: digest(response.workspace) };
+  const { thread } = await f.bridge.call({ schemaVersion: '1.0', method: 'start', binding: f.binding, parameters: { model: 'test-model' } });
+  const observe = { schemaVersion: '1.0', method: 'observe', sessionId: thread.id };
+  await assert.rejects(f.bridge.call({ ...observe, binding: second }), /identity_mismatch/);
+  const report = { schemaVersion: '1.0', status: 'ready', commitSha: 'a'.repeat(40), summary: 'Done', prTitle: 'Verified', prBody: 'Tests passed', issueComplete: true };
+  f.state.latest = { id: 'report-turn', status: 'inProgress' };
+  f.rpc.onNotification({ id: 1, method: 'item/tool/call', params: { threadId: thread.id, turnId: f.state.latest.id, callId: 'call-1', tool: 'labstride_report', arguments: report } });
+  assert.equal(f.frames.at(-1).result.success, true);
+  const journal = new ReportJournal(f.root);
+  try { assert.equal(journal.hasSession(second, thread.id), false); }
+  finally { journal.close(); }
+
+  f.bridge.close();
+  f.state.latest.status = 'completed';
+  const reopened = createCodexBridge({ ...f.policy, installationId: f.receipt.installationId }, f.rpc);
+  t.after(() => reopened.close());
+  const observed = await reopened.call({ ...observe, binding: f.binding });
+  assert.equal(observed.report.runId, f.binding.runId);
+  assert.equal(observed.report.commitSha, report.commitSha);
+});
+
+test('a scoped bridge rejects even a valid workspace receipt from a different installation', async t => {
+  const f = await fixture(t);
+  const foreign = createCodexBridge({ ...f.policy, installationId: 'installation-other' }, f.rpc);
+  t.after(() => foreign.close());
+  await assert.rejects(foreign.call({ schemaVersion: '1.0', method: 'start', binding: f.binding, parameters: { model: 'test-model' } }), /identity_mismatch/);
+  assert.equal(f.requests.some(request => request.method === 'thread/start'), false);
 });
 
 test('checked initial delivery preserves native Plan mode and refuses later automatic instructions', async t => {
