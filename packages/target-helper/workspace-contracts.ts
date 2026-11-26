@@ -2,6 +2,7 @@ import { validated } from '../storage-sqlite/validation.ts';
 import { requestDigest, digest } from '../storage-sqlite/execution.ts';
 import { locatorFor } from './registry.ts';
 import { TargetError } from './filesystem.ts';
+import { issueBranchName } from '../core/issue-naming.ts';
 import type { TrustedWorkspaceHelperPolicyV2 } from '../../contracts/generated/ssh-workspace-policy.ts';
 import type { TrustedWorkspaceHelperRequestV2 } from '../../contracts/generated/ssh-workspace-request.ts';
 import type { TrustedWorkspaceHelperResponseV2 } from '../../contracts/generated/ssh-workspace-response.ts';
@@ -13,9 +14,9 @@ export type WorkspaceReceipt = OwnedWorkspaceCreationReceiptV1;
 export const workspaceAction = 'labstride.workspace-create';
 export const workspaceVersion = '1.0.0';
 export const workspaceCapabilities = ['workspace.probe.v1','workspace.create.v1','workspace.inspect.v1'] as const;
-export function workspaceIdentity(installationId: string, targetId: string, workspaceId: string) {
+export function workspaceIdentity(installationId: string, targetId: string, workspaceId: string, issue?: WorkspaceReceipt['source']['issue']) {
   const locator = locatorFor(installationId, targetId, workspaceId);
-  return { locator, branch: `labstride/${locator}`, ownershipRef: `workspace:${locator}` };
+  return { locator, branch: issue ? issueBranchName(locator, issue) : `labstride/${locator}`, ownershipRef: `workspace:${locator}` };
 }
 export function validateWorkspaceRequest(policy: WorkspacePolicy, input: unknown): WorkspaceRequest {
   const request = validated<WorkspaceRequest>('ssh-workspace-request', input as WorkspaceRequest);

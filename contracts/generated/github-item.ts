@@ -24,4 +24,9 @@ export interface GitHubItemSnapshot {
       [k: string]: string;
     };
   };
+  issue?: GithubIssue;
+}
+export interface GithubIssue {
+  number: number;
+  title: string;
 }

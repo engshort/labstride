@@ -618,7 +618,8 @@
         "evidence/W03.2-live-continuity-receipt-2026-10-23.json",
         "evidence/W03.2-native-fields-2026-10-24.md",
         "evidence/W03.2-private-source-2026-10-24.md",
-        "evidence/W03.2-private-source-receipt-2026-10-24.json"
+        "evidence/W03.2-private-source-receipt-2026-10-24.json",
+        "evidence/W04-W06-named-local-installations-2026-11-26.md"
       ],
       "github_issue": 22,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/22"
@@ -1243,7 +1244,8 @@
         "evidence/W04-W06-local-self-build-2026-10-24.md",
         "evidence/W04-W06-native-history-2026-10-24.md",
         "evidence/W04-W06-report-journal-2026-10-24.md",
-        "evidence/W04-W06-bounded-report-observation-2026-10-24.md"
+        "evidence/W04-W06-bounded-report-observation-2026-10-24.md",
+        "evidence/W04-W06-named-local-installations-2026-11-26.md"
       ],
       "github_issue": 17,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/17"

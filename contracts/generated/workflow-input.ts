@@ -9,4 +9,9 @@ export interface Source {
   repositoryId: string;
   repository: string;
   sha: string;
+  issue?: GithubIssue;
+}
+export interface GithubIssue {
+  number: number;
+  title: string;
 }

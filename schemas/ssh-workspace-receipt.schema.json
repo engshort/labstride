@@ -39,7 +39,8 @@
     },
     "branch": {
       "type": "string",
-      "pattern": "^labstride/ws-[a-f0-9]{40}$"
+      "pattern": "^labstride/(?:ws-[a-f0-9]{40}|[1-9][0-9]{0,9}-[a-z0-9]+(?:-[a-z0-9]+)*-[a-f0-9]{12})$",
+      "maxLength": 82
     },
     "ownershipRef": {
       "$ref": "contract-common.schema.json#/$defs/id"
@@ -62,6 +63,9 @@
         "sha": {
           "type": "string",
           "pattern": "^[a-f0-9]{40}$"
+        },
+        "issue": {
+          "$ref": "contract-common.schema.json#/$defs/githubIssue"
         }
       },
       "required": [

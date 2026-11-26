@@ -25,7 +25,7 @@ import { directoryIdentity } from '../packages/target-helper/filesystem.ts';
 // Real checkout, bundle verification, local Git push and SQLite sequencing.
 // GitHub and Codex wire responses are controlled peers, not live qualification.
 async function setup(t, { losePrReply = false, loseStartReply = false, supported = true, nativeReports = false, losePushReply = false,
-  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog, useExistingCheckout = false, loseCheckoutReply = false } = {}) {
+  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog, useExistingCheckout = false, loseCheckoutReply = false, issue, originalName = null, loseNameReply = false } = {}) {
   // The in-process helper and coordinator must share the fixture's clock;
   // otherwise its fixed one-day request expires with the real calendar.
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T12:00:00.000Z') });
@@ -88,6 +88,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       { id: 'coding', action: 'labstride.self-build', inputs: { schemaVersion: '1.0', target: 'target-a', workspaceId: 'context.workspaceId' } },
     ];
   }, buildPlan(_f, compiled) { return (steps, observed) => workspaceStart(compiled, steps, observed); } });
+  if (issue) f.item.issue = issue;
   f.item.fields.session = { present: false };
   if (useExistingCheckout) f.item.fields.path = { present: false };
   for (const name of ['aiMode','model','reasoning']) f.item.fields[name] = { present: true, value: options.agent.defaults[name] };
@@ -102,7 +103,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
   f.store.advanceWorkflows(f.dependencies.host); assert.equal(f.store.operations(run.id).length, 2);
   const op = f.store.operations(run.id)[1].request, state = { starts: 0, turns: 0, latest: { id: 'initial', status: 'completed' }, report: null, creates: 0, pr: null, loss: losePrReply, startLoss: loseStartReply,
     pushes: 0, credentialReads: 0, pushLoss: losePushReply, prepareFailure, headConflict: false, readyLoss: loseReadyReply, readies: 0, changeTurnOnBundle: false,
-    greenSha: null, checkoutPrepares: 0, checkoutInspections: 0 };
+    greenSha: null, checkoutPrepares: 0, checkoutInspections: 0, name: originalName };
   const remote = join(source.root, 'published.git'); runGit(source.root, ['-c', 'protocol.file.allow=always', 'clone', '--bare', '--no-hardlinks', source.repository, remote]);
   const branchSha = () => runGit(remote, ['rev-parse', `refs/heads/${workspace.branch}`]);
   const git = args => runGit(cwd, ['-c', `safe.directory=${cwd}`, ...args]);
@@ -130,7 +131,12 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
         model, supportedReasoningEfforts: reasoning.map(reasoningEffort => ({ reasoningEffort })),
       })), nextCursor: null };
       if (method === 'thread/start') { state.starts++; return { thread: { id: 'original-session', cwd, historyMode: 'legacy' } }; }
-      if (method === 'thread/read' || method === 'thread/resume') return { thread: { id: 'original-session', cwd, source: 'cli', historyMode: 'legacy', status: { type: state.latest?.status === 'inProgress' ? 'active' : 'idle' } } };
+      if (method === 'thread/read' || method === 'thread/resume') return { thread: { id: 'original-session', cwd, source: 'cli', historyMode: 'legacy', name: state.name, status: { type: state.latest?.status === 'inProgress' ? 'active' : 'idle' } } };
+      if (method === 'thread/name/set') {
+        state.name = params.name;
+        if (loseNameReply) throw Error('outcome_unknown');
+        return {};
+      }
       if (method === 'thread/turns/list') return { data: state.latest ? [{ ...state.latest, ...(params.itemsView === 'full' ? { itemsView: 'full', items: [] } : {}) }] : [] };
       if (method === 'turn/start') { state.turns++; state.latest = { id: 'initial', status: 'completed' }; return { turn: state.latest }; }
       throw Error('unexpected_native_method');
@@ -325,7 +331,8 @@ test('a prior green head cannot advance a new PR head after reopening the coordi
 });
 
 test('an existing checkout survives a lost preparation reply and publishes from the exact registered Codex path', async t => {
-  const f = await setup(t, { nativeReports: true, useExistingCheckout: true, loseCheckoutReply: true });
+  const f = await setup(t, { nativeReports: true, useExistingCheckout: true, loseCheckoutReply: true,
+    issue: { number: 123, title: 'Rita en blå hund' } });
   for (let i = 0; i < 8 && !f.state.checkoutPrepares; i++) await f.tick();
   assert.equal(f.state.checkoutPrepares, 1);
   assert.equal(f.state.starts, 0);
@@ -338,12 +345,38 @@ test('an existing checkout survives a lost preparation reply and publishes from 
   assert.equal(store.managedSession(f.run.id).path, f.cwd);
   assert.equal(f.nativeCalls.find(entry => entry.method === 'thread/start').params.cwd, f.cwd);
 
+  assert.match(runGit(f.cwd, ['symbolic-ref', '--short', 'HEAD']), /^labstride\/123-rita-en-bla-hund-[a-f0-9]{12}$/);
+  assert.equal(f.state.name, '#123 • Rita en blå hund • source');
+  assert.equal(f.nativeCalls.filter(call => call.method === 'thread/name/set').length, 1);
+  assert(f.nativeCalls.findIndex(call => call.method === 'thread/name/set') >
+    f.nativeCalls.findIndex(call => call.method === 'turn/start'));
+
   f.commit('work-visible-in-lab.txt');
   assert.equal(readFileSync(join(f.cwd, 'work-visible-in-lab.txt'), 'utf8'), 'implemented\n');
   for (let i = 0; i < 8 && f.item.fields.status.value !== 'review-a'; i++) await f.tick();
   assert.equal(f.item.fields.status.value, 'review-a');
   assert.equal(f.state.pr.head.sha, f.state.report.commitSha);
   assert.deepEqual([f.state.starts, f.state.turns, f.state.pushes, f.state.creates], [1, 1, 1, 1]);
+});
+
+test('a human-assigned native name survives automated issue naming', async t => {
+  const f = await setup(t, { nativeReports: true, issue: { number: 42, title: 'An issue' }, originalName: 'An operator name' });
+  for (let i = 0; i < 8 && !f.state.turns; i++) await f.tick();
+  assert.equal(f.state.turns, 1);
+  assert.equal(f.state.name, 'An operator name');
+  assert.equal(f.nativeCalls.some(call => call.method === 'thread/name/set'), false);
+  assert.deepEqual(f.store.readManagedEffect(f.op.operationId, 'thread-name'), { status: 'preserved' });
+});
+
+test('uncertain native naming is recorded and never replayed after recovery', async t => {
+  const f = await setup(t, { nativeReports: true, issue: { number: 42, title: 'An issue' }, loseNameReply: true });
+  for (let i = 0; i < 8 && !f.state.turns; i++) await f.tick();
+  assert.equal(f.state.name, '#42 • An issue • source');
+  assert.deepEqual(f.store.readManagedEffect(f.op.operationId, 'thread-name'), { status: 'unconfirmed' });
+  const store = f.restart();
+  for (let i = 0; i < 3; i++) await f.tick();
+  assert.equal(f.nativeCalls.filter(call => call.method === 'thread/name/set').length, 1);
+  assert.deepEqual(store.readManagedEffect(f.op.operationId, 'thread-name'), { status: 'unconfirmed' });
 });
 
 test('a lost PR creation response adopts exact independent PR evidence without creating a second PR', async t => {

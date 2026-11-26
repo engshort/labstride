@@ -217,6 +217,14 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
       initial = await effect(op, 'initial-turn', command, () => bridge.call(command));
       store.managedRunActive(op.runId);
     }
+    if (op.source.issue && !store.readManagedEffect(op.operationId, 'thread-name')) {
+      const command = { schemaVersion: '1.0' as const, method: 'name' as const, binding: bind, sessionId: session.sessionId };
+      const permit = store.beginManagedEffect(op.operationId, 'thread-name', { requestDigest: digest(command) });
+      const unconfirmed = { status: 'unconfirmed' };
+      // Persist uncertainty without enqueuing a second metadata write after a lost reply.
+      const outcome = permit.dispatch ? await bridge.call(command).catch(() => unconfirmed) : unconfirmed;
+      store.finishManagedEffect(op.operationId, 'thread-name', outcome);
+    }
     const observation = await bridge.call({ schemaVersion: '1.0', method: 'observe', binding: bind, sessionId: session.sessionId });
     if (!observation.report) {
       const initialPlan = session.mode === 'plan' && observation.turn?.id === initial.turn.id;

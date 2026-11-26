@@ -161,7 +161,8 @@ export class GitHubStore extends ConfigurationStore {
       event:{schemaVersion:'1.0',eventId:`github:${id}`,externalId:`github:${id}`,installationId:project.installationId,provider:project.providerId,
         subjectId:item.subjectId,actorId:last.actorId??'unknown',kind:'field.changed',origin:last.actorId?'human':'provider',
         occurredAt:last.occurredAt,observedAt:this.clock.now(),sourceVersion:digest(item),facts:{scopeId:project.scopeId,itemId:item.itemId,historyEventId:last.id}}});
-    const source = {repositoryId:item.repositoryId,repository:item.repository,sha:item.sourceSha};
+    const source: GitHubCandidate['source'] = {repositoryId:item.repositoryId,repository:item.repository,sha:item.sourceSha,
+      ...(item.issue ? { issue:item.issue } : {})};
     const evidence: ActorEvidence | null = last.actorId ? {schemaVersion:'1.0',installationId:project.installationId,providerId:project.providerId,
       externalId:observation.event.externalId,subjectId:item.subjectId,actorId:last.actorId,repositoryId:item.repositoryId,repository:item.repository,
       configDigest:project.configDigest,generation,observationDigest:authorizationObservationDigest(observation),evidenceRefs:[`github:history:${last.id}`]} : null;

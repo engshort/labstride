@@ -62,7 +62,7 @@ export class WorkspaceRegistry {
       }
       const op=request.operation!; assertWorkspaceAvailable(this.db, op.workspaceId);
       const root=this.policy.roots.find(root=>root.id===op.inputs.rootId)!;
-      const identity=workspaceIdentity(request.installationId,request.targetId,op.workspaceId);
+      const identity=workspaceIdentity(request.installationId,request.targetId,op.workspaceId,op.source.issue);
       const saved=this.db.prepare('SELECT * FROM workspace_creations WHERE operation_id=?').get(op.operationId);
       if(saved) {
         if(saved.request_digest!==op.requestDigest || saved.request!==JSON.stringify(op))throw new TargetError('identity_mismatch');

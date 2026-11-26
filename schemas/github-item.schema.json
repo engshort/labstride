@@ -94,6 +94,9 @@
           "maxLength": 1024
         }
       }
+    },
+    "issue": {
+      "$ref": "contract-common.schema.json#/$defs/githubIssue"
     }
   },
   "required": [

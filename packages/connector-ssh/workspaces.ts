@@ -40,7 +40,7 @@ export function workspaceTargetResolver(host:HostProfile) {
             if(reply[field]!==request[field])throw new ExtensionError('identity_mismatch');
           const receipt=reply.workspace,op=request.operation;
           if(receipt&&op) {
-            const expected={...workspaceIdentity(request.installationId,request.targetId,op.workspaceId),installationId:request.installationId,
+            const expected={...workspaceIdentity(request.installationId,request.targetId,op.workspaceId,op.source.issue),installationId:request.installationId,
               targetId:request.targetId,targetRevision:request.targetRevision,runId:op.runId,workspaceId:op.workspaceId,
               operationId:op.operationId,handle:op.operationId,requestDigest:op.requestDigest,rootId:op.inputs.rootId,source:op.source};
             for(const field of Object.keys(expected) as (keyof typeof expected)[])
@@ -104,6 +104,6 @@ export function prepareWorkspaceStart<T extends {workspace:RecordOf<'workspace'>
   validated('workspace-create-input',op.inputs);
   if(op.actionId!==workspaceAction || op.actionVersion!==workspaceVersion || next.workspace.id!==op.workspaceId || next.workspace.targetId!==op.targetId)
     throw new ExtensionError('identity_mismatch');
-  Object.assign(next.workspace,workspaceIdentity(installationId,op.targetId,op.workspaceId));
+  Object.assign(next.workspace,workspaceIdentity(installationId,op.targetId,op.workspaceId,op.source.issue));
   return next;
 }
