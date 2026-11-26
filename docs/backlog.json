@@ -1231,7 +1231,8 @@
       "spec": "22-api-and-schema-reference.md",
       "acceptance_criteria": [
         "Start/resume/observe/send/interrupt/close preserve provider identity, reject stale human/turn revisions and explicitly report missing atomic backend guards.",
-        "Optional hooks are correlated, deduplicated observations with backend reconciliation when missing; the existing interactive client resumes the same enrolled session, not a substituted daemon."
+        "Optional hooks are correlated, deduplicated observations with backend reconciliation when missing; the existing interactive client resumes the same enrolled session, not a substituted daemon.",
+        "Managed Codex startup sends the configured model and reasoning effort only when the enrolled backend advertises that combination."
       ],
       "implementation_pr": "https://github.com/alex-engvall/labstride/pull/52",
       "verification_evidence": [

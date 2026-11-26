@@ -15,6 +15,26 @@ import { createWorker, actionKey } from '../packages/core/worker.ts';
 import { loadExtension, freezeProfile } from '../packages/extensions/loader.ts';
 import { backupDatabase, inspectDatabase } from '../packages/operations/runtime.ts';
 import { GitHubRest } from '../packages/operations/github.ts';
+import { installationShape, loadInstallation } from '../packages/operations/installation.ts';
+import { cli } from '../apps/cli/main.ts';
+
+test('native init writes a disabled GPT-6.2 profile with Sol as the default', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'labstride-native-init-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'installation.json');
+  await cli(['init', path], () => {});
+  const spec = loadInstallation(path);
+  installationShape(spec);
+  assert.equal(spec.configuration.enabled, false);
+  assert.equal(spec.agent.backendVersion, '0.172.0');
+  assert.deepEqual(spec.configuration.fields.model.options, { default: 'model-default', astra: 'model-astra' });
+  assert.deepEqual(spec.agent.runtimeValues.model, { 'model-default': 'gpt-6.2-sol', 'model-astra': 'gpt-6.2-astra' });
+  const fields = { aiMode: { present: false }, model: { present: false }, reasoning: { present: false } };
+  const selected = selectAgent(spec, fields);
+  assert.equal(selected.aiMode.value, 'plan');
+  assert.equal(selected.model.value, 'gpt-6.2-sol');
+  assert.equal(selected.reasoning.value, 'medium');
+});
 
 test('outbound-only configuration compiles without a broker, but cannot enable workflow dispatch', async t => {
   const root = mkdtempSync(join(tmpdir(), 'labstride-installed-')); t.after(() => rmSync(root, { recursive: true, force: true }));

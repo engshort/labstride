@@ -21,7 +21,8 @@ import { cli } from '../apps/cli/main.ts';
 
 // Real checkout, bundle verification, local Git push and SQLite sequencing.
 // GitHub and Codex wire responses are controlled peers, not live qualification.
-async function setup(t, { losePrReply = false, loseStartReply = false, supported = true, nativeReports = false, losePushReply = false, prepareFailure = false, loseReadyReply = false } = {}) {
+async function setup(t, { losePrReply = false, loseStartReply = false, supported = true, nativeReports = false, losePushReply = false,
+  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog } = {}) {
   // The in-process helper and coordinator must share the fixture's clock;
   // otherwise its fixed one-day request expires with the real calendar.
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T12:00:00.000Z') });
@@ -31,15 +32,21 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     agent: { bridgeSocket: '/unused', backendIdentity: 'test', backendVersion: '0.163.0', checkedDelivery: true,
       defaults: { aiMode: 'mode-plan', model: 'model-test', reasoning: 'reason-medium' },
       runtimeValues: { aiMode: { 'mode-plan': 'plan', 'mode-none': 'none' }, model: { 'model-test': 'test-model' }, reasoning: { 'reason-medium': 'medium' } } } };
+  if (modelProfile) options.agent = { ...modelProfile.agent, bridgeSocket: '/unused' };
+  const models = Object.entries(modelCatalog ?? { 'test-model': supported ? ['medium'] : [] })
+    .map(([model, reasoning]) => ({ model, reasoning }));
   const pins = [];
   const f = await githubFixture(t, { native: true, configure(f) {
     f.source = source.operation.source; f.config.github.repositories = [f.source.repository]; f.config.controls = {};
     f.dependencies.host.permissions.push('session.manage');
-    for (const [name, value] of Object.entries({ aiMode: 'mode-plan', model: 'model-test', reasoning: 'reason-medium' })) {
-      f.config.fields[name] = { source: 'organization_issue_field', scopeId: 'scope-a', fieldId: name, type: 'single-select', options: { default: value } };
-      f.descriptors[name] = { ...f.descriptors['status-a'], fieldId: name, source: 'organization_issue_field', credentialRef: 'secret:repository', optionIds: [value] };
+    for (const [name, value] of Object.entries(options.agent.defaults)) {
+      const fieldOptions = modelProfile?.configuration.fields[name].options ?? { default: value };
+      f.config.fields[name] = { source: 'organization_issue_field', scopeId: 'scope-a', fieldId: name, type: 'single-select', options: fieldOptions };
+      f.descriptors[name] = { ...f.descriptors['status-a'], fieldId: name, source: 'organization_issue_field', credentialRef: 'secret:repository', optionIds: Object.values(fieldOptions) };
     }
-    f.config.fields.aiMode.options.none = 'mode-none'; f.descriptors.aiMode.optionIds.push('mode-none');
+    if (!modelProfile) {
+      f.config.fields.aiMode.options.none = 'mode-none'; f.descriptors.aiMode.optionIds.push('mode-none');
+    }
     f.config.fields.session = { source: 'organization_issue_field', scopeId: 'scope-a', fieldId: 'session', type: 'string' };
     f.descriptors.session = { ...f.descriptors['note-a'], fieldId: 'session', scopeId: 'scope-a', source: 'organization_issue_field' };
     f.config.projections = [
@@ -47,6 +54,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       { fact: 'workspace.ready', field: 'session', value: 'registered-checkout' },
       { fact: 'self-build.session-ready', field: 'session', valueFrom: { kind: 'session-id' } },
       ...['planning','waiting-accept','working','testing','review'].map(name => ({ fact: `self-build.${name}`, field: 'status', value: 'busy' })),
+      ...Object.keys(options.agent.defaults).map(name => ({ fact: `self-build.default-${name}`, field: name, value: 'default' })),
     ];
     for (const packageName of ['action-workspace-create', 'action-self-build']) {
       const artifactPath = join(f.root, packageName + '.json');
@@ -79,7 +87,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
   const branchSha = () => runGit(remote, ['rev-parse', `refs/heads/${workspace.branch}`]);
   const git = args => runGit(cwd, ['-c', `safe.directory=${cwd}`, ...args]);
   let bridge = { async call(request) {
-    if (request.method === 'catalog') return { models: [{ model: 'test-model', reasoning: supported ? ['medium'] : [] }] };
+    if (request.method === 'catalog') return { models };
     if (request.method === 'start') { state.starts++; if (state.startLoss) throw Error('transport_unknown'); return { thread: { id: 'original-session', cwd } }; }
     if (request.method === 'turn') { state.turns++; assert.equal(request.parameters.mode, 'plan'); return { turn: state.latest }; }
     if (request.method === 'observe') return { sessionId: 'original-session', path: cwd, state: 'idle', turn: state.latest, report: state.report };
@@ -92,18 +100,22 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
   } };
   let nativeRpc;
   const acknowledgements = [];
+  const nativeCalls = [];
   if (nativeReports) {
     state.latest = null;
     nativeRpc = { notify() {}, frame(_op, bytes) { acknowledgements.push(JSON.parse(bytes)); }, close() {}, async call(method, params) {
-      if (method === 'initialize') return { userAgent: 'codex/0.163.0 linux' };
-      if (method === 'model/list') return { data: [{ model: 'test-model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }] };
+      nativeCalls.push({ method, params });
+      if (method === 'initialize') return { userAgent: `codex/${options.agent.backendVersion} linux` };
+      if (method === 'model/list') return { data: models.map(({ model, reasoning }) => ({
+        model, supportedReasoningEfforts: reasoning.map(reasoningEffort => ({ reasoningEffort })),
+      })), nextCursor: null };
       if (method === 'thread/start') { state.starts++; return { thread: { id: 'original-session', cwd, historyMode: 'legacy' } }; }
       if (method === 'thread/read' || method === 'thread/resume') return { thread: { id: 'original-session', cwd, source: 'cli', historyMode: 'legacy', status: { type: state.latest?.status === 'inProgress' ? 'active' : 'idle' } } };
       if (method === 'thread/turns/list') return { data: state.latest ? [{ ...state.latest, ...(params.itemsView === 'full' ? { itemsView: 'full', items: [] } : {}) }] : [] };
       if (method === 'turn/start') { state.turns++; state.latest = { id: 'initial', status: 'completed' }; return { turn: state.latest }; }
       throw Error('unexpected_native_method');
     } };
-    bridge = createCodexBridge({ schemaVersion: '1.0', socket: join(f.root, 'native-bridge.sock'), backendSocket: '/unused', backendVersion: '0.163.0',
+    bridge = createCodexBridge({ schemaVersion: '1.0', socket: join(f.root, 'native-bridge.sock'), backendSocket: '/unused', backendVersion: options.agent.backendVersion,
       sourceRoot: options.sourceRoot, helperUid: process.getuid(), stateDirectory: f.root }, nativeRpc);
     t.after(() => bridge.close());
   }
@@ -159,7 +171,56 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       state.latest.status = 'completed';
     }
   }
-  return { ...f, run, op, state, cwd, tick, commit, action, provider, observer, branchSha };
+  return { ...f, run, op, state, cwd, tick, commit, action, provider, observer, branchSha, nativeCalls };
+}
+
+const modelProfile = JSON.parse(readFileSync(new URL('../examples/operational-installation.json', import.meta.url)));
+for (const { selection, model } of [
+  { selection: 'default', model: 'gpt-6.2-sol' },
+  { selection: 'astra', model: 'gpt-6.2-astra' },
+]) {
+  test(`native GPT-6.2 ${selection} selection reaches the session and the first Plan turn`, async t => {
+    const f = await setup(t, { nativeReports: true, modelProfile, modelCatalog: {
+      'gpt-6.2-sol': ['medium'], 'gpt-6.2-astra': ['medium', 'high'],
+    } });
+    const modelOption = modelProfile.configuration.fields.model.options[selection];
+    f.item.fields.aiMode = { present: false };
+    f.item.fields.reasoning = { present: false };
+    f.item.fields.model = selection === 'default' ? { present: false } : { present: true, value: modelOption };
+    for (let i = 0; i < 12 && !f.state.turns; i++) await f.tick();
+
+    assert.equal(f.state.starts, 1, f.store.workflowDiagnostic(f.run.id));
+    assert.equal(f.state.turns, 1, f.store.workflowDiagnostic(f.run.id));
+    assert.deepEqual(f.item.fields.model, { present: true, value: modelOption });
+    const selectionSaved = f.store.managedSessionStart(f.op.operationId);
+    assert.equal(selectionSaved.model, model);
+    assert.equal(selectionSaved.reasoning, 'medium');
+    const start = f.nativeCalls.find(call => call.method === 'thread/start');
+    assert.equal(start.params.model, model);
+    assert.equal(start.params.allowProviderModelFallback, false);
+    const turn = f.nativeCalls.find(call => call.method === 'turn/start');
+    assert.deepEqual(turn.params.collaborationMode, {
+      mode: 'plan', settings: { model, reasoning_effort: 'medium', developer_instructions: null },
+    });
+  });
+}
+
+for (const { unavailable, astra } of [
+  { unavailable: 'model', astra: {} },
+  { unavailable: 'reasoning effort', astra: { 'gpt-6.2-astra': ['high'] } },
+]) {
+  test(`a GPT-6.2 selection with an unavailable ${unavailable} records no native intent`, async t => {
+    const f = await setup(t, { nativeReports: true, modelProfile, modelCatalog: { 'gpt-6.2-sol': ['medium'], ...astra } });
+    f.item.fields.model = { present: true, value: modelProfile.configuration.fields.model.options.astra };
+    for (let i = 0; i < 6 && !f.store.workflowDiagnostic(f.run.id); i++) await f.tick();
+
+    assert(f.nativeCalls.some(call => call.method === 'model/list'));
+    assert.equal(f.store.workflowDiagnostic(f.run.id), 'unsupported_agent_choice');
+    assert.equal(f.store.managedSessionStart(f.op.operationId), null);
+    assert.equal(f.store.hasManagedEffect(f.op.operationId, 'thread-start'), false);
+    assert.equal(f.state.starts, 0);
+    assert.equal(f.state.turns, 0);
+  });
 }
 
 test('journaled native report advances through real bundle and local push to one review PR without a history tool item', async t => {
