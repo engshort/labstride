@@ -30,6 +30,11 @@ export function installationShape(spec: Installation) {
   const fields = config.fields;
   if (['request', 'aiMode', 'model', 'reasoning', 'session', 'path'].some(name => fields[name]?.source !== 'organization_issue_field') ||
     new Set(['request', 'aiMode', 'model', 'reasoning', 'session', 'path'].map(name => fields[name].fieldId)).size !== 6) throw Error('installation_binding_invalid');
+  if (spec.agent.existingCheckout) {
+    const paths = config.projections.filter(entry => entry.field === 'path');
+    if (config.limits.activeRuns !== 1 || config.github.repositories.length !== 1 || paths.length !== 1 ||
+        paths[0].fact !== 'self-build.checkout-ready' || paths[0].value !== spec.agent.existingCheckout || paths[0].valueFrom) throw Error('installation_binding_invalid');
+  }
   for (const name of ['aiMode', 'model', 'reasoning'] as const) {
     const defaultId = spec.agent.defaults[name];
     if (!Object.values(fields[name].options ?? {}).includes(defaultId) || !Object.hasOwn(spec.agent.runtimeValues[name], defaultId)) throw Error('agent_default_invalid');

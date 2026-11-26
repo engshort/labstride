@@ -32,8 +32,19 @@ export class ReportJournal {
           PRIMARY KEY(binding,session_id,turn_id,call_id));
         PRAGMA user_version=1; COMMIT;`);
       if (db.prepare('PRAGMA user_version').get()!.user_version !== 1) throw Error('report_journal_version');
+      db.exec(`CREATE TABLE IF NOT EXISTS checkout_sessions (
+        session_id TEXT PRIMARY KEY, binding TEXT NOT NULL UNIQUE
+      )`);
       return db;
     } catch (error) { db.close(); throw error; }
+  }
+  registerCheckoutSession(binding: BridgeBinding, sessionId: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO checkout_sessions VALUES (?,?)').run(sessionId, digest(binding));
+    this.verifyCheckoutSession(binding, sessionId);
+  }
+  verifyCheckoutSession(binding: BridgeBinding, sessionId: string): void {
+    const row = this.db.prepare('SELECT binding FROM checkout_sessions WHERE session_id=?').get(sessionId);
+    if (row?.binding !== digest(binding)) throw Error('identity_mismatch');
   }
   record(binding: BridgeBinding, callId: unknown, input: unknown): void {
     if (typeof callId !== 'string' || !callId || callId.length > 1024) throw Error('report_call_invalid');

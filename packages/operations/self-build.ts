@@ -64,7 +64,7 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
   async function phase(op: Operation, name: string) {
     const request = store.get('request', store.get('run', op.runId).requestId), item = await github.item(request.issueId);
     if (!item) throw Error('issue_unavailable');
-    const occurrence = name === 'session-ready' ? undefined : store.phaseRevision(op.runId, name);
+    const occurrence = ['session-ready', 'checkout-ready'].includes(name) ? undefined : store.phaseRevision(op.runId, name);
     store.enqueueGitHubProgress(op.runId, `self-build.${name}`, item, occurrence);
   }
   async function effect(op: Operation, name: string, request: unknown, dispatch: () => Promise<unknown>) {
@@ -75,7 +75,28 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
   function binding(op: Operation): BridgeBinding {
     const receipt = store.workspaceReceipt(op.runId), workspace = store.workspace(op.runId);
     if (receipt.rootId !== options.rootId || receipt.targetId !== op.targetId || receipt.workspaceId !== workspace.id || receipt.locator !== workspace.locator || receipt.ownershipRef !== workspace.ownershipRef) throw Error('identity_mismatch');
-    return { runId: op.runId, workspaceId: workspace.id, path: join(options.sourceRoot, receipt.locator, 'source'), receiptDigest: digest(receipt) };
+    return { runId: op.runId, workspaceId: workspace.id, path: join(options.sourceRoot, receipt.locator, 'source'), receiptDigest: digest(receipt),
+      ...(options.agent.existingCheckout ? { workingPath: options.agent.existingCheckout } : {}) };
+  }
+  async function prepareExistingCheckout(op: Operation, bind: BridgeBinding) {
+    const name = 'existing-checkout';
+    const call = (method: 'checkout-probe' | 'checkout-prepare' | 'checkout-inspect') =>
+      bridge.call({ schemaVersion: '1.0', method, binding: bind });
+    if (!store.hasManagedEffect(op.operationId, name)) await call('checkout-probe');
+    const permit = store.beginManagedEffect(op.operationId, name, { requestDigest: digest(bind) });
+    let observed = permit.response as { cwd?: string } | null;
+    if (!observed) {
+      if (permit.dispatch) observed = await call('checkout-prepare');
+      else {
+        // Read back the original exact branch after a lost response. A new
+        // checkout or switch is never permission to replay the old intent.
+        try { observed = await call('checkout-inspect'); }
+        catch { throw Error('outcome_unknown'); }
+      }
+      if (observed?.cwd !== bind.workingPath) throw Error('identity_mismatch');
+      store.finishManagedEffect(op.operationId, name, observed);
+    }
+    if (observed?.cwd !== bind.workingPath) throw Error('identity_mismatch');
   }
   async function publish(op: Operation, report: NonNullable<ReturnType<WorkflowStore['managedReport']>>, bind: BridgeBinding) {
     const suffix = report.commitSha.slice(0, 20), workspace = store.workspace(op.runId), source = op.source;
@@ -147,7 +168,7 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
   async function step(op: Operation): Promise<BoundResult> {
     if (store.get('run', op.runId).state === 'completed') return result(op, 'succeeded', { merged: true });
     if (!store.forwardAllowed(op.runId)) return result(op, 'accepted');
-    const bind = binding(op), request = store.get('request', store.get('run', op.runId).requestId);
+    const bind = binding(op), cwd = bind.workingPath ?? bind.path, request = store.get('request', store.get('run', op.runId).requestId);
     let session = store.managedSession(op.runId);
     if (!session) {
       const item = await github.item(request.issueId); if (!item) throw Error('issue_unavailable');
@@ -166,15 +187,20 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
           if (!model?.reasoning?.includes(selected.reasoning.value)) throw Error('unsupported_agent_choice');
         }
         start = store.freezeSessionStart(op.operationId, { schemaVersion: '1.0', runId: op.runId, workspaceId: op.workspaceId,
-          configDigest: op.configDigest, receiptDigest: bind.receiptDigest, sourceSha: op.source.sha, path: bind.path,
+          configDigest: op.configDigest, receiptDigest: bind.receiptDigest, sourceSha: op.source.sha, path: cwd,
           mode: selected.aiMode.value as 'plan' | 'default' | 'none', model: selected.model.value, reasoning: selected.reasoning.value,
           choices: { aiMode: selected.aiMode.optionId, model: selected.model.optionId, reasoning: selected.reasoning.optionId } });
       }
-      if (start.path !== bind.path || start.receiptDigest !== bind.receiptDigest) throw Error('identity_mismatch');
+      if (start.path !== cwd || start.receiptDigest !== bind.receiptDigest) throw Error('identity_mismatch');
+      if (bind.workingPath) {
+        await prepareExistingCheckout(op, bind);
+        await phase(op, 'checkout-ready');
+        if (store.pendingProgressWrite(op.runId)) return result(op, 'accepted');
+      }
       if (start.mode === 'none') return result(op, 'succeeded', { noAgent: true });
       const command = { schemaVersion: '1.0' as const, method: 'start' as const, binding: bind, parameters: { model: start.model } };
       const created = await effect(op, 'thread-start', command, () => bridge.call(command));
-      store.registerManagedSession(op.operationId, created.thread.id, bind.path, start.mode, start.model, start.reasoning);
+      store.registerManagedSession(op.operationId, created.thread.id, cwd, start.mode, start.model, start.reasoning);
       session = store.managedSession(op.runId)!;
     }
     await phase(op, 'session-ready');

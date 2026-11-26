@@ -20,7 +20,9 @@ export async function githubFixture(t,{progress=false,native=false,configure=()=
   const compiled=compilation.configuration;
   const {store}=startCoordinator(root,{policyAuthority:localAuthority,clock:{now:()=>now}});
   store.activateConfiguration(compiled,null,context,localAuthority);publishFixturePolicy(store,f,compiled);
-  t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+  let closed=false;
+  const close=()=>{if(!closed){store.close();closed=true;}};
+  t.after(()=>{close();rmSync(root,{recursive:true,force:true});});
   const item={schemaVersion:'1.0',scopeId:'scope-a',itemId:'item-test',subjectId:'issue-test',repositoryId:f.source.repositoryId,repository:f.source.repository,sourceSha:f.source.sha,
     updatedAt:now,fields:{request:{present:true,value:'wait-a'},status:{present:false},note:{present:true,value:'literal'},keep:{present:true,value:false}},
     optionNames:{request:{'go-a':'Start','wait-a':'Waiting'},status:{'busy-a':'Busy'}}};
@@ -29,7 +31,7 @@ export async function githubFixture(t,{progress=false,native=false,configure=()=
   const adapter={providerId:'test.provider',beginTick(){},async list(){calls++;return{items:present?[structuredClone(item)]:[],hasNextPage:false,endCursor:'list-cursor'};},
     async item(){calls++;return present?structuredClone(item):null;},async history(){calls++;return{schemaVersion:'1.0',events:structuredClone(events),hasNextPage:false,endCursor:'history-cursor'};}};
   const options={compiled,adapter,buildPlan:buildPlan?buildPlan(f,compiled):planFor(f,compiled)},worker=createGitHubWorker(store,options),key=worker.keys[0];
-  return{...f,compiled,store,adapter,options,worker,key,item,events,root,now:()=>now,calls:()=>calls,
+  return{...f,compiled,store,close,adapter,options,worker,key,item,events,root,now:()=>now,calls:()=>calls,
     advance(ms=60001){now=new Date(Date.parse(now)+ms).toISOString();},
     present(value){present=value;},
     change(value='go-a',actorId=context.actorId){const before=item.fields.request.present?item.optionNames.request[item.fields.request.value]:'';

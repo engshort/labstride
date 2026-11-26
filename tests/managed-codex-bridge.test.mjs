@@ -5,12 +5,15 @@ import { workspaceFixture } from './helpers/workspace-fixture.mjs';
 import { WorkspaceRegistry } from '../packages/target-helper/workspaces.ts';
 import { digest } from '../packages/configuration/json.ts';
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ReportJournal } from '../packages/operations/report-journal.ts';
+import { requestDigest } from '../packages/storage-sqlite/execution.ts';
 import { UnixRpc } from '../packages/session-codex/index.mjs';
 import { socketServer } from './helpers/codex-socket.mjs';
+import { directoryIdentity } from '../packages/target-helper/filesystem.ts';
+import { runGit } from '../packages/target-helper/workspace-git.ts';
 
 async function fixture(t) {
   const f = workspaceFixture(t), registry = new WorkspaceRegistry(f.policy, f.dependencies); t.after(() => registry.close());
@@ -37,7 +40,7 @@ async function fixture(t) {
     sourceRoot: f.policy.roots[0].path, helperUid: process.getuid(), stateDirectory: f.root };
   const bridge = createCodexBridge(policy, rpc);
   t.after(() => bridge.close());
-  return { ...f, receipt, binding, requests, frames, state, bridge, rpc, policy };
+  return { ...f, registry, receipt, binding, requests, frames, state, bridge, rpc, policy };
 }
 
 test('managed bridge validates original filesystem receipt and starts one configured native thread', async t => {
@@ -50,6 +53,87 @@ test('managed bridge validates original filesystem receipt and starts one config
   assert.equal(request.params.dynamicTools[0].name, 'labstride_report');
   await assert.rejects(f.bridge.call({ schemaVersion: '1.0', method: 'start', binding: { ...f.binding, receiptDigest: '0'.repeat(64) }, parameters: { model: 'test-model' } }), /identity_mismatch/);
   assert.equal(f.requests.filter(request => request.method === 'thread/start').length, 1);
+});
+
+test('a rejected session observation never reroutes an acknowledged report', async t => {
+  const f = await fixture(t);
+  const secondRequest = structuredClone(f.request);
+  for (const key of ['runId', 'workspaceId', 'operationId']) secondRequest.operation[key] += ':second';
+  secondRequest.requestId = secondRequest.operation.operationId;
+  secondRequest.operation.requestDigest = requestDigest(secondRequest.operation);
+  const response = await f.registry.handle(secondRequest);
+  assert.equal(response.outcome, 'ok');
+  const { runId, workspaceId } = response.workspace;
+  const second = { runId, workspaceId, path: f.sourcePath(response.workspace), receiptDigest: digest(response.workspace) };
+  const { thread } = await f.bridge.call({ schemaVersion: '1.0', method: 'start', binding: f.binding, parameters: { model: 'test-model' } });
+  const observe = { schemaVersion: '1.0', method: 'observe', sessionId: thread.id };
+  await assert.rejects(f.bridge.call({ ...observe, binding: second }), /identity_mismatch/);
+  const report = { schemaVersion: '1.0', status: 'ready', commitSha: 'a'.repeat(40), summary: 'Done', prTitle: 'Verified', prBody: 'Tests passed', issueComplete: true };
+  f.state.latest = { id: 'report-turn', status: 'inProgress' };
+  f.rpc.onNotification({ id: 1, method: 'item/tool/call', params: { threadId: thread.id, turnId: f.state.latest.id, callId: 'call-1', tool: 'labstride_report', arguments: report } });
+  assert.equal(f.frames.at(-1).result.success, true);
+  const journal = new ReportJournal(f.root);
+  try { assert.equal(journal.hasSession(second, thread.id), false); }
+  finally { journal.close(); }
+
+  f.bridge.close();
+  f.state.latest.status = 'completed';
+  const reopened = createCodexBridge({ ...f.policy, installationId: f.receipt.installationId }, f.rpc);
+  t.after(() => reopened.close());
+  const observed = await reopened.call({ ...observe, binding: f.binding });
+  assert.equal(observed.report.runId, f.binding.runId);
+  assert.equal(observed.report.commitSha, report.commitSha);
+});
+
+test('a scoped bridge rejects even a valid workspace receipt from a different installation', async t => {
+  const f = await fixture(t);
+  const foreign = createCodexBridge({ ...f.policy, installationId: 'installation-other' }, f.rpc);
+  t.after(() => foreign.close());
+  await assert.rejects(foreign.call({ schemaVersion: '1.0', method: 'start', binding: f.binding, parameters: { model: 'test-model' } }), /identity_mismatch/);
+  assert.equal(f.requests.some(request => request.method === 'thread/start'), false);
+});
+
+test('an enrolled existing checkout rejects another run and keeps session ownership when the same path is re-leased', async t => {
+  const f = await fixture(t);
+  const path = join(f.root, 'live-checkout');
+  runGit(f.root, ['-c', 'protocol.file.allow=always', 'clone', '--no-hardlinks', f.repository, path]);
+  runGit(path, ['remote', 'set-url', 'origin', 'https://github.com/example/source.git']);
+  runGit(path, ['switch', '-C', 'main', f.receipt.source.sha]);
+  const reportDirectory = join(f.root, 'existing-reports');
+  mkdirSync(reportDirectory, { mode: 0o700 });
+  const policy = { ...f.policy, installationId: f.receipt.installationId, reportDirectory,
+    existingCheckout: { path, baseBranch: 'main', repository: f.receipt.source.repository,
+      checkout: directoryIdentity(path), gitDirectory: directoryIdentity(join(path, '.git')) } };
+  const original = { ...f.binding, workingPath: path };
+  const secondRequest = structuredClone(f.request);
+  for (const key of ['runId', 'workspaceId', 'operationId']) secondRequest.operation[key] += ':second';
+  secondRequest.requestId = secondRequest.operation.operationId;
+  secondRequest.operation.requestDigest = requestDigest(secondRequest.operation);
+  const response = await f.registry.handle(secondRequest);
+  assert.equal(response.outcome, 'ok');
+  const second = { runId: response.workspace.runId, workspaceId: response.workspace.workspaceId,
+    path: f.sourcePath(response.workspace), receiptDigest: digest(response.workspace), workingPath: path };
+  let bridge = createCodexBridge(policy, f.rpc);
+  t.after(() => bridge.close());
+  const prepare = binding => bridge.call({ schemaVersion: '1.0', method: 'checkout-prepare', binding });
+  const observe = binding => bridge.call({ schemaVersion: '1.0', method: 'observe', binding, sessionId: 'managed-thread' });
+  writeFileSync(join(path, 'untracked'), 'preserve');
+  await assert.rejects(prepare(original), /checkout_not_publishable/);
+  assert.equal(readFileSync(join(path, 'untracked'), 'utf8'), 'preserve');
+  rmSync(join(path, 'untracked'));
+  assert.equal((await prepare(original)).cwd, path);
+  f.state.cwd = path;
+  await bridge.call({ schemaVersion: '1.0', method: 'start', binding: original, parameters: { model: 'test-model' } });
+  await assert.rejects(prepare(second), /resource_busy/);
+  assert.equal(runGit(path, ['branch', '--show-current']), f.receipt.branch);
+
+  bridge.close();
+  bridge = createCodexBridge(policy, f.rpc);
+  assert.equal((await observe(original)).path, path);
+  runGit(path, ['switch', 'main']); // Explicit operator handoff.
+  await prepare(second);
+  await assert.rejects(observe(second), /identity_mismatch/);
+  assert.equal(runGit(path, ['branch', '--show-current']), response.workspace.branch);
 });
 
 test('checked initial delivery preserves native Plan mode and refuses later automatic instructions', async t => {

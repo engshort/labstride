@@ -958,7 +958,8 @@
         "evidence/W04-W06-bounded-report-observation-2026-10-24.md",
         "evidence/W06.1-public-operations-2026-10-24.md",
         "evidence/W06.1-recovery-inspection-2026-10-24.md",
-        "evidence/W02.3-history-isolation-2026-10-27.md"
+        "evidence/W02.3-history-isolation-2026-10-27.md",
+        "evidence/W04-W06-named-local-installations-2026-11-26.md"
       ],
       "github_issue": 30,
       "github_issue_url": "https://github.com/alex-engvall/labstride/issues/30"

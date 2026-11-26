@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Reviewed administrative bootstrap; leaves the issue listener disabled."""
 import argparse
-import base64
 import grp
 import hashlib
 import json
@@ -21,9 +20,36 @@ def command(args, **kwargs):
 def no_links(path):
     current = path
     while current != current.parent:
-        if current.exists() and current.is_symlink():
+        if current.is_symlink():
             raise RuntimeError('symlink_path_preserved')
         current = current.parent
+
+
+class InstanceLayout:
+    def __init__(self, name):
+        if name is not None and not re.fullmatch(r'[a-z][a-z0-9-]{0,15}', name):
+            raise RuntimeError('invalid_instance')
+        self.name = name
+        roots = [Path('/etc/labstride'), Path('/var/lib/labstride'), Path('/srv/labstride')]
+        self.parents = roots.copy()
+        if name is not None:
+            for suffix in ('instances', name):
+                roots = [path / suffix for path in roots]
+                self.parents.extend(roots)
+        self.config, self.state, workspace_parent = roots
+        self.source_root = workspace_parent / 'workspaces'
+        self.coordinator = 'labstride_coord' if name is None else f'ls-{name}-coord'
+        self.helper = 'labstride_helper' if name is None else f'ls-{name}-helper'
+        self.work_group = 'labstride_work' if name is None else f'ls-{name}-work'
+        self.bridge_group = 'labstride_bridge' if name is None else f'ls-{name}-bridge'
+        self.coordinator_unit = 'labstride.service' if name is None else f'labstride-coordinator@{name}.service'
+        self.bridge_unit = 'labstride-bridge.service' if name is None else f'labstride-bridge@{name}.service'
+        self.runtime_dir = 'labstride-bridge' if name is None else f'labstride-bridge-{name}'
+        self.release_root = Path('/opt/labstride/releases')
+        self.units = Path('/etc/systemd/system')
+        self.host_key = Path('/etc/ssh/ssh_host_ed25519_key.pub')
+        self.launcher = (Path('/usr/local/bin/labstride') if name is None else
+                         Path('/opt/labstride/instances') / name / 'bin/labstride')
 
 
 def managed_directory(path, uid=0, gid=0, mode=0o755):
@@ -73,6 +99,28 @@ def ensure_user(name, home):
         return pwd.getpwnam(name)
 
 
+def enroll_existing_checkout(spec, layout, coding):
+    value = spec['agent'].get('existingCheckout')
+    if value is None:
+        return None
+    if layout.name is None or spec['configuration']['limits']['activeRuns'] != 1 or len(spec['policy']['repositories']) != 1:
+        raise RuntimeError('existing_checkout_requires_single_named_installation')
+    checkout = Path(value)
+    no_links(checkout / '.git')
+    if not checkout.is_absolute() or str(checkout.resolve(strict=True)) != value or any(
+            checkout.is_relative_to(root) or root.is_relative_to(checkout) for root in (layout.state, layout.source_root, layout.config)):
+        raise RuntimeError('existing_checkout_invalid')
+
+    def identity(path):
+        info = path.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != coding.pw_uid:
+            raise RuntimeError('existing_checkout_invalid')
+        return {'device': info.st_dev, 'inode': info.st_ino, 'uid': info.st_uid}
+
+    return {'path': value, 'baseBranch': spec['baseBranch'], 'repository': spec['policy']['repositories'][0]['name'],
+            'checkout': identity(checkout), 'gitDirectory': identity(checkout / '.git')}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bundle', type=Path, required=True)
@@ -80,10 +128,17 @@ def main():
     parser.add_argument('--configuration', type=Path, required=True)
     parser.add_argument('--coding-user', required=True)
     parser.add_argument('--backend-socket', type=Path, required=True)
+    parser.add_argument('--instance', help='Install under an independent local instance name')
+    parser.add_argument('--private-source', action='store_true', help='Configure a helper-owned source-token file for private clones')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--stage-only', action='store_true', help='Verify and copy immutable release files without changing service configuration')
     args = parser.parse_args()
-    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', args.coding_user):
+    install(args, InstanceLayout(args.instance))
+
+
+def install(args, layout):
+    if (not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', args.coding_user) or
+            args.coding_user in (layout.coordinator, layout.helper)):
         raise RuntimeError('invalid_account')
     raw = (args.bundle / 'release-manifest.json').read_bytes()
     if hashlib.sha256(raw).hexdigest() != args.manifest_sha256:
@@ -109,6 +164,7 @@ def main():
             raise RuntimeError('incomplete_release')
     spec = json.loads(args.configuration.read_text())
     coding = pwd.getpwnam(args.coding_user)
+    existing_checkout = enroll_existing_checkout(spec, layout, coding)
     if spec['configuration']['enabled']:
         raise RuntimeError('bootstrap_must_be_disabled')
     if args.dry_run:
@@ -117,8 +173,8 @@ def main():
     if os.geteuid() != 0:
         raise RuntimeError('administrative_access_required')
     os.umask(0o077)
-    release = Path('/opt/labstride/releases') / manifest['revision']
-    for directory in [Path('/opt/labstride'), Path('/opt/labstride/releases'), release]:
+    release = layout.release_root / manifest['revision']
+    for directory in [layout.release_root.parent, layout.release_root, release]:
         managed_directory(directory)
     for name, (data, executable) in inputs.items():
         output = release / name
@@ -132,23 +188,27 @@ def main():
     if args.stage_only:
         print(json.dumps({'schemaVersion': '1.0', 'code': 'release_staged', 'revision': manifest['revision'], 'servicesChanged': False}))
         return
-    for directory in [Path('/etc/labstride'), Path('/var/lib/labstride'), Path('/srv/labstride')]:
+    for directory in layout.parents:
         managed_directory(directory)
-    coordinator = ensure_user('labstride_coord', Path('/var/lib/labstride/coordinator'))
-    helper = ensure_user('labstride_helper', Path('/var/lib/labstride/helper-home'))
-    report_directory = Path('/var/lib/labstride/bridge-reports')
+    coordinator = ensure_user(layout.coordinator, layout.state / 'coordinator')
+    helper = ensure_user(layout.helper, layout.state / 'helper-home')
+    report_directory = layout.state / 'bridge-reports'
     managed_directory(report_directory, coding.pw_uid, coding.pw_gid, 0o700)
-    work_gid, bridge_gid = ensure_group('labstride_work'), ensure_group('labstride_bridge')
-    for user, groups in [(args.coding_user, 'labstride_work,labstride_bridge'), (helper.pw_name, 'labstride_work'), (coordinator.pw_name, 'labstride_bridge')]:
+    work_gid, bridge_gid = ensure_group(layout.work_group), ensure_group(layout.bridge_group)
+    memberships = [(helper.pw_name, layout.work_group), (coordinator.pw_name, layout.bridge_group)]
+    if layout.name is None:
+        memberships.append((args.coding_user, f'{layout.work_group},{layout.bridge_group}'))
+    for user, groups in memberships:
         command(['/usr/sbin/usermod', '-aG', groups, user])
-    source_root = Path('/srv/labstride/workspaces')
+    source_root = layout.source_root
     managed_directory(source_root, helper.pw_uid, work_gid, 0o750)
     # Named UID ACLs apply to the already running coding daemon. Changing its
     # supplementary groups would otherwise require interrupting existing chats.
     command(['/usr/bin/setfacl', '-m', f'u:{coding.pw_uid}:rx,u:{coordinator.pw_uid}:rx,d:u::rwx,d:u:{coding.pw_uid}:rwx,d:u:{coordinator.pw_uid}:rx,d:g::---,d:m::rwx,d:o::---', str(source_root)])
     state = Path(coordinator.pw_dir)
     managed_directory(state, coordinator.pw_uid, coordinator.pw_gid, 0o700)
-    managed_directory(Path('/var/lib/labstride/helper'), helper.pw_uid, helper.pw_gid, 0o700)
+    helper_state = layout.state / 'helper'
+    managed_directory(helper_state, helper.pw_uid, helper.pw_gid, 0o700)
     managed_directory(Path(helper.pw_dir))
     managed_directory(Path(helper.pw_dir) / '.ssh')
     enrollment = state / 'enrollment'
@@ -176,8 +236,9 @@ def main():
         os.chown(private_key, coordinator.pw_uid, coordinator.pw_gid)
         os.chown(Path(str(private_key) + '.pub'), coordinator.pw_uid, coordinator.pw_gid)
     no_links(private_key)
-    helper_launcher = release / 'bin/helper'
-    launch = '#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME=' + shlex.quote(helper.pw_dir) + ' ' + shlex.quote(str(release / 'bin/node')) + ' ' + shlex.quote(str(release / 'apps/target-helper/main.ts')) + ' /etc/labstride/helper.json\n'
+    helper_launcher = release / 'bin/helper' if layout.name is None else layout.config / 'helper-launch'
+    helper_config = layout.config / 'helper.json'
+    launch = '#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME=' + shlex.quote(helper.pw_dir) + ' ' + shlex.quote(str(release / 'bin/node')) + ' ' + shlex.quote(str(release / 'apps/target-helper/main.ts')) + ' ' + shlex.quote(str(helper_config)) + '\n'
     managed_file(helper_launcher, launch.encode(), mode=0o755)
     public_key = Path(str(private_key) + '.pub').read_text().strip()
     managed_file(Path(helper.pw_dir) / '.ssh/authorized_keys', ('restrict,command="' + str(helper_launcher) + '" ' + public_key + '\n').encode())
@@ -195,13 +256,14 @@ def main():
     if len(spec['policy']['repositories']) != 1:
         raise RuntimeError('bootstrap_supports_one_repository')
     helper_policy = {'schemaVersion': '2.0', 'installationId': spec['configuration']['installationId'], 'targetId': target_id, 'targetRevision': 1,
-                     'helperUid': helper.pw_uid, 'codingUid': coding.pw_uid, 'codingGid': work_gid, 'stateDir': '/var/lib/labstride/helper',
+                     'helperUid': helper.pw_uid, 'codingUid': coding.pw_uid, 'codingGid': work_gid, 'stateDir': str(helper_state),
                      'roots': [{'id': root_id, 'path': str(source_root), 'identity': root_identity}],
-                     'sources': [{'repositoryId': repository['id'], 'repository': repository['name'], 'gitUrl': 'https://github.com/' + repository['name'] + '.git', 'apiUrl': 'https://api.github.com/repos/' + repository['name'], 'credentialFile': None}]}
-    spec['rootMappingFile'] = '/etc/labstride/root-mapping.json'
+                     'sources': [{'repositoryId': repository['id'], 'repository': repository['name'], 'gitUrl': 'https://github.com/' + repository['name'] + '.git', 'apiUrl': 'https://api.github.com/repos/' + repository['name'],
+                                  'credentialFile': str(layout.config / 'source-token') if args.private_source else None}]}
+    spec['rootMappingFile'] = str(layout.config / 'root-mapping.json')
     managed_file(Path(spec['rootMappingFile']), (json.dumps({'schemaVersion':'1.0','sourceRoot':str(source_root),'targetId':target_id,'rootId':root_id,'identity':root_identity}) + '\n').encode(), gid=coordinator.pw_gid, mode=0o640)
-    managed_file(Path('/etc/labstride/helper.json'), (json.dumps(helper_policy, indent=2) + '\n').encode(), gid=helper.pw_gid, mode=0o640)
-    host_key = Path('/etc/ssh/ssh_host_ed25519_key.pub').read_text().strip().split()
+    managed_file(helper_config, (json.dumps(helper_policy, indent=2) + '\n').encode(), gid=helper.pw_gid, mode=0o640)
+    host_key = layout.host_key.read_text().strip().split()
     if host_key[0] != 'ssh-ed25519':
         raise RuntimeError('local_host_key_unavailable')
     enrolled = {'schemaVersion': '1.0', 'installationId': spec['configuration']['installationId'], 'targetId': target_id, 'revision': 1,
@@ -221,8 +283,19 @@ def main():
             raise RuntimeError('existing_enrollment_preserved')
         connector_configuration = {'enrollmentDirectory': str(enrollment), 'targetId': target_id, 'revision': 1, 'digest': row[1]}
     spec.update({'stateDirectory': str(state), 'sourceRoot': str(source_root), 'revision': manifest['revision']})
-    spec['agent']['bridgeSocket'] = '/run/labstride-bridge/control.sock'
+    bridge_runtime = Path('/run') / layout.runtime_dir
+    spec['agent']['bridgeSocket'] = str(bridge_runtime / 'control.sock')
     spec['configuration']['targets'][target_id] = {'connector': 'labstride.connector.ssh', 'configuration': connector_configuration}
+    for projection in spec['configuration']['projections']:
+        value = projection.get('valueFrom', {})
+        if existing_checkout and projection['fact'] == 'workspace.ready' and projection['field'] == 'request' and not value:
+            projection['fact'] = 'self-build.checkout-ready'
+        if value.get('kind') == 'workspace-source-path' and (value.get('targetId'), value.get('rootId')) == (target_id, root_id):
+            if existing_checkout and projection['field'] == 'path':
+                del projection['valueFrom']
+                projection.update(fact='self-build.checkout-ready', value=existing_checkout['path'])
+            else:
+                value['rootPath'] = str(source_root)
     for pin in spec['lock']['extensions']:
         package = {'labstride.connector.ssh': 'connector-ssh', 'labstride.workspace-create': 'action-workspace-create', 'labstride.self-build': 'action-self-build', 'labstride.github.native': 'provider-github'}[pin['id']]
         artifact = release / 'artifacts' / (package + '.json')
@@ -235,21 +308,27 @@ def main():
     spec['configuration']['extensions'] = [{key: pin[key] for key in ['id', 'version', 'integrity']} for pin in spec['lock']['extensions']]
     for grant in spec['policy']['grants']:
         grant['actionVersion'] = next(pin['version'] for pin in spec['lock']['extensions'] if pin['id'] == grant['actionId'])
-    managed_file(Path('/etc/labstride/installation.json'), (json.dumps(spec, indent=2) + '\n').encode(), gid=coordinator.pw_gid, mode=0o640)
+    installation_config = layout.config / 'installation.json'
+    managed_file(installation_config, (json.dumps(spec, indent=2) + '\n').encode(), gid=coordinator.pw_gid, mode=0o640)
+    bridge_config = layout.config / 'bridge.json'
     bridge_policy = {'schemaVersion': '1.0', 'socket': spec['agent']['bridgeSocket'], 'backendSocket': str(args.backend_socket), 'backendVersion': spec['agent']['backendVersion'],
-                     'sourceRoot': str(source_root), 'helperUid': helper.pw_uid, 'stateDirectory': '/run/labstride-bridge', 'reportDirectory': str(report_directory)}
-    managed_file(Path('/etc/labstride/bridge.json'), (json.dumps(bridge_policy, indent=2) + '\n').encode(), gid=bridge_gid, mode=0o640)
+                     'sourceRoot': str(source_root), 'helperUid': helper.pw_uid, 'stateDirectory': str(bridge_runtime), 'reportDirectory': str(report_directory)}
+    if layout.name is not None:
+        bridge_policy['installationId'] = spec['configuration']['installationId']
+    if existing_checkout:
+        bridge_policy['existingCheckout'] = existing_checkout
+    managed_file(bridge_config, (json.dumps(bridge_policy, indent=2) + '\n').encode(), gid=bridge_gid, mode=0o640)
     cli = release / 'apps/cli/main.ts'
     coordinator_unit = f'''[Unit]
 Description=Labstride coordinator
-After=network-online.target labstride-bridge.service
-Wants=network-online.target labstride-bridge.service
+After=network-online.target {layout.bridge_unit}
+Wants=network-online.target {layout.bridge_unit}
 [Service]
 User={coordinator.pw_name}
 Group={coordinator.pw_name}
-SupplementaryGroups=labstride_bridge labstride_work
+SupplementaryGroups={layout.bridge_group} {layout.work_group}
 UMask=0077
-ExecStart={node} {cli} serve --config /etc/labstride/installation.json
+ExecStart={node} {cli} serve --config {installation_config}
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60
@@ -266,12 +345,12 @@ Description=Labstride coding-user bridge to existing Codex daemon
 After=network.target
 [Service]
 User={args.coding_user}
-Group=labstride_bridge
-SupplementaryGroups=labstride_work
+Group={layout.bridge_group}
+SupplementaryGroups={layout.work_group}
 UMask=0007
-RuntimeDirectory=labstride-bridge
+RuntimeDirectory={layout.runtime_dir}
 RuntimeDirectoryMode=0750
-ExecStart={node} {cli} bridge /etc/labstride/bridge.json
+ExecStart={node} {cli} bridge {bridge_config}
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -279,11 +358,16 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 '''
-    managed_file(Path('/etc/systemd/system/labstride.service'), coordinator_unit.encode())
-    managed_file(Path('/etc/systemd/system/labstride-bridge.service'), bridge_unit.encode())
-    launcher = '#!/bin/sh\nexec /usr/sbin/runuser -u labstride_coord -- ' + shlex.quote(node) + ' ' + shlex.quote(str(cli)) + ' "$@"\n'
-    managed_file(Path('/usr/local/bin/labstride'), launcher.encode(), mode=0o755)
-    command(['/usr/bin/systemd-analyze', 'verify', '/etc/systemd/system/labstride.service', '/etc/systemd/system/labstride-bridge.service'])
+    coordinator_unit_path = layout.units / layout.coordinator_unit
+    bridge_unit_path = layout.units / layout.bridge_unit
+    managed_file(coordinator_unit_path, coordinator_unit.encode())
+    managed_file(bridge_unit_path, bridge_unit.encode())
+    launcher = '#!/bin/sh\nexec /usr/sbin/runuser -u ' + layout.coordinator + ' -- ' + shlex.quote(node) + ' ' + shlex.quote(str(cli)) + ' "$@"\n'
+    if layout.name is not None:
+        for directory in reversed(layout.launcher.parents[:3]):
+            managed_directory(directory)
+    managed_file(layout.launcher, launcher.encode(), mode=0o755)
+    command(['/usr/bin/systemd-analyze', 'verify', str(coordinator_unit_path), str(bridge_unit_path)])
     command(['/usr/bin/systemctl', 'daemon-reload'])
     print(json.dumps({'schemaVersion': '1.0', 'code': 'installed_disabled', 'revision': manifest['revision'], 'servicesStarted': False,
                       'next': 'Verify dedicated credentials, root mapping and negative access tests before starting the bridge and running doctor.'}))

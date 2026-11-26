@@ -258,6 +258,7 @@ export interface OperationalInstallationV1 {
     bridgeSocket: string;
     backendIdentity: string;
     backendVersion: string;
+    existingCheckout?: string;
     checkedDelivery: true;
     defaults: {
       aiMode: string;
