@@ -56,3 +56,10 @@ Migration v10 appends snapshot storage, an active installation pointer, nullable
 Pause effects and take a consistent SQLite backup before upgrading. There is no automatic down-migration. Restoring an earlier database requires reconciliation against any external effects completed since the backup. Preserve pinned artifacts and secret references required by active runs. Snapshot absence/corruption is an explicit blocked condition, not permission to replay an uncertain effect.
 
 The W02.1 tests use Linux/Node 24.22.0, owned temporary databases, synthetic provider descriptions, an installed public test action and actual process death. Their compiler coverage alone does not establish GitHub polling/rename/permission behavior, SSH root enforcement, distribution, a public CLI or production readiness. The later [W02.3 evidence](evidence/W02.3-reconciliation-2026-10-23.md) passes AC04 for its tested GitHub profile. Full AC06/AC26 and AC35/AC36 retain their documented target/integration gates.
+
+The native self-build installation additionally requires all selectable agent
+option IDs to have explicit runtime mappings, with no orphan runtime keys. Modes
+must resolve to `plan`, `default` or `none`. Runtime doctor checks the default
+model/reasoning pair and confirms every configured model and reasoning value is
+usable in the observed catalog. It does not promise that every model supports
+every reasoning effort; an explicit unsupported pair remains blocked at startup.

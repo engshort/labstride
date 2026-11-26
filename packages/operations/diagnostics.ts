@@ -17,7 +17,7 @@ const known = new Set(['credential_unavailable','credential_expired','permission
   'unsupported_capability','integrity_mismatch','artifact_unavailable','identity_mismatch','forbidden','configuration_invalid','validation_failed',
   'installation_binding_invalid','separate_project_credential_required','unsupported_field_source','unsupported_workflow','merge_not_enabled',
   'broker_configuration_invalid','probe_policy_mismatch','provider_unavailable','backend_version_mismatch','agent_default_unsupported',
-  'agent_default_invalid','root_mapping_mismatch','target_unavailable','transport_unknown','rate_limited','budget_exhausted','unsafe_state_path',
+  'agent_default_invalid','unsupported_agent_choice','root_mapping_mismatch','target_unavailable','transport_unknown','rate_limited','budget_exhausted','unsafe_state_path',
   'unsupported_schema','storage_failure','recovery_required','effect_blocked','service_lock_present','service_lock_unavailable','usage','not_found',
   'backup_exists','backup_invalid','restore_destination_occupied','maintenance_incomplete','migration_failed','release_metadata_invalid','release_metadata_unreadable','operation_failed','identity_conflict','revision_conflict','invalid_transition']);
 export function diagnosticCode(error: unknown): string {
@@ -32,6 +32,15 @@ export function invalidInstallation(value: unknown): OperatorDiagnosticReportV1 
   return report(false, validationIssues(name, value).map(issue => ({ code: 'configuration_invalid', path: issue.path,
     severity: 'error', status: 'unavailable', message: `Correct the installation schema (${issue.keyword}); rejected values are omitted.` })));
 }
+/** Every configured choice must be usable; defaults must form a supported pair. */
+export function validateAgentCatalog(agent: import('../../contracts/generated/operational-installation.ts').OperationalInstallationV1['agent'], catalog: any): void {
+  const model = agent.runtimeValues.model[agent.defaults.model], reasoning = agent.runtimeValues.reasoning[agent.defaults.reasoning];
+  if (!catalog.models?.some((entry: any) => entry.model === model && entry.reasoning.includes(reasoning))) throw Error('agent_default_unsupported');
+  const models = Object.values(agent.runtimeValues.model), efforts = Object.values(agent.runtimeValues.reasoning);
+  if (models.some(model => !catalog.models?.some((entry: any) => entry.model === model && efforts.some(effort => entry.reasoning?.includes(effort)))) ||
+    efforts.some(effort => !catalog.models?.some((entry: any) => models.includes(entry.model) && entry.reasoning?.includes(effort)))) throw Error('unsupported_agent_choice');
+}
+
 export async function checkInstallation(spec: Installation, runtime = true, options: {
   mode?: ExecutionMode;
   route?: boolean; dependencies?: ReturnType<typeof installationDependencies>; transport?: typeof fetch;
@@ -119,8 +128,7 @@ export async function checkInstallation(spec: Installation, runtime = true, opti
       try {
         const catalog = options.catalog ? await options.catalog() : await new BridgeClient(spec.agent.bridgeSocket).call({ schemaVersion: '1.0', method: 'catalog' });
         if (catalog.backendVersion !== spec.agent.backendVersion) throw Error('backend_version_mismatch');
-        const model = spec.agent.runtimeValues.model[spec.agent.defaults.model], reasoning = spec.agent.runtimeValues.reasoning[spec.agent.defaults.reasoning];
-        if (!catalog.models?.some((entry: any) => entry.model === model && entry.reasoning.includes(reasoning))) throw Error('agent_default_unsupported');
+        validateAgentCatalog(spec.agent,catalog);
         add('session_catalog_observed', '/agent', 'Backend version and model catalog responded. This does not verify authentication, client continuity or atomic human guards.', 'info', 'observed');
       } catch (error) { add(diagnosticCode(error), '/agent', 'Verify the enrolled bridge/backend identity, runtime authentication and configured model/reasoning availability.'); }
       add('session_continuity_unverified', '/agent', 'Interactive continuity requires the enrolled-client proof; catalog success cannot pass that gate.', 'warning', 'unavailable');

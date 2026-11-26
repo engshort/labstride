@@ -10,6 +10,7 @@ import { validated } from '../storage-sqlite/validation.ts';
 import type { ManagedCodingResultV1 } from '../../contracts/generated/managed-result.ts';
 import { digest } from '../configuration/json.ts';
 import { ReportJournal } from './report-journal.ts';
+import { NativeNameJournal, issueThreadTitle } from './native-name-journal.ts';
 import { assertSeparate } from '../storage-sqlite/paths.ts';
 
 const maxWire = 24 * 1024 * 1024;
@@ -48,6 +49,61 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
   const reportDirectory = policy.reportDirectory ?? policy.stateDirectory;
   assertSeparate(join(reportDirectory, 'managed-reports'), policy.sourceRoot);
   const reports = new ReportJournal(reportDirectory);
+  // Optional metadata is journaled separately and can never grant a new turn.
+  let names: NativeNameJournal | undefined;
+  const nameJobs = new Set<string>();
+  let bridgeClosed = false;
+  const nameFailure = () => {
+    try { process.stderr.write(JSON.stringify({ code: 'native_name_unavailable' }) + '\n'); } catch { /* Optional logging only. */ }
+  };
+  try { names = new NativeNameJournal(reportDirectory); } catch { nameFailure(); }
+  function proposeName(binding: BridgeBinding, sessionId: string, prompt: string, repository: string) {
+    if (!names) return;
+    const title = issueThreadTitle(prompt, repository);
+    if (title === null) return;
+    try { names.propose(binding, sessionId, title); } catch { nameFailure(); }
+  }
+  function scheduleName(binding: BridgeBinding, sessionId: string) {
+    if (!names || bridgeClosed || nameJobs.size >= 64) return;
+    const journal = names, key = digest({ binding, sessionId });
+    if (nameJobs.has(key)) return;
+    try {
+      const row = journal.read(binding, sessionId);
+      if (!row || ['applied', 'preserved'].includes(row.state)) return;
+    } catch { nameFailure(); return; }
+    nameJobs.add(key);
+    void (async () => {
+      await ready();
+      if (bridgeClosed) return;
+      workspace(binding);
+      const row = journal.read(binding, sessionId);
+      if (!row || ['applied', 'preserved'].includes(row.state)) return;
+      const metadata = async () => {
+        const { thread } = await rpc.call('thread/read', { threadId: sessionId, includeTurns: false });
+        if (thread?.id !== sessionId || thread.cwd !== binding.path || thread.source?.subAgent || !['legacy', 'paginated'].includes(thread.historyMode)) throw Error('identity_mismatch');
+        if (!Object.hasOwn(thread, 'name') || thread.name !== null && typeof thread.name !== 'string') return undefined;
+        return thread.name as string | null;
+      };
+      const current = await metadata();
+      if (current === undefined) { journal.note(binding, sessionId, 'name_metadata_missing'); return; }
+      if (current === row.title) { journal.complete(binding, sessionId, 'applied'); return; }
+      if (typeof current === 'string' && current.trim()) { journal.complete(binding, sessionId, 'preserved'); return; }
+      // After a lost acknowledgement, a blank read does NOT prove no write
+      // happened (the owner may have cleared it). Never resend that intent.
+      if (row.state === 'intent') { journal.note(binding, sessionId, 'name_effect_unknown'); return; }
+      workspace(binding);
+      if (bridgeClosed || !journal.intent(binding, sessionId)) return;
+      await rpc.call('thread/name/set', { threadId: sessionId, name: row.title });
+      const after = await metadata();
+      if (after === row.title) journal.complete(binding, sessionId, 'applied');
+      else if (typeof after === 'string' && after.trim()) journal.complete(binding, sessionId, 'preserved');
+      else journal.note(binding, sessionId, after === undefined ? 'name_metadata_missing' : 'name_effect_unknown');
+    })().catch(() => {
+      try { journal.note(binding, sessionId, 'native_name_unavailable'); } catch { /* Retain existing intent. */ }
+      nameFailure();
+    }).finally(() => { nameJobs.delete(key); });
+  }
+
   let initialized: Promise<void> | undefined;
   // A new thread has no pageable rollout until its first user message. This
   // witness is intentionally process-local: disconnect/restart loses it and
@@ -100,9 +156,9 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
     accessSync(binding.path, constants.W_OK);
     return receipt;
   }
-  async function observe(binding: BridgeBinding, sessionId: string, allowFresh = false) {
+  async function observe(binding: BridgeBinding, sessionId: string, allowFresh = false, allowPaginated = false) {
     const { thread } = await rpc.call('thread/read', { threadId: sessionId, includeTurns: false });
-    if (thread?.id !== sessionId || thread.cwd !== binding.path || thread.source?.subAgent || thread.historyMode !== 'legacy') throw Error('identity_mismatch');
+    if (thread?.id !== sessionId || thread.cwd !== binding.path || thread.source?.subAgent || !(thread.historyMode === 'legacy' || allowPaginated && thread.historyMode === 'paginated')) throw Error('identity_mismatch');
     let history;
     try { history = await rpc.call('thread/turns/list', { threadId: sessionId, limit: 1, sortDirection: 'desc', itemsView: 'summary' }); }
     catch (error: any) {
@@ -183,7 +239,7 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         // Read metadata only. No resume, report recovery, turn or interrupt.
         const read = async () => {
           const {thread} = await rpc.call('thread/read',{threadId:sessionId,includeTurns:false});
-          if(thread?.id!==sessionId || thread.cwd!==binding.path || thread.source?.subAgent || thread.historyMode!=='legacy') throw Error('identity_mismatch');
+          if(thread?.id!==sessionId || thread.cwd!==binding.path || thread.source?.subAgent || !['legacy', 'paginated'].includes(thread.historyMode)) throw Error('identity_mismatch');
           const history = await rpc.call('thread/turns/list',{threadId:sessionId,limit:1,sortDirection:'desc',itemsView:'summary'});
           if(!Array.isArray(history.data)||history.data.length>1)throw Error('history_unavailable');
           const turn=history.data[0];
@@ -193,10 +249,11 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         if(digest(first)!==digest(second))throw Error('stale_revision');
         return validated('managed-cleanup-observation',{schemaVersion:'1.0',runId:binding.runId,workspaceId:binding.workspaceId,sessionId,path:binding.path,...second,observedAt:new Date().toISOString()});
       }
-      const before = await observe(binding, sessionId, request.method === 'turn' && parameters.expectedTurnId === null);
+      const before = await observe(binding, sessionId, request.method === 'turn' && parameters.expectedTurnId === null, ['observe', 'interrupt'].includes(request.method));
       if (request.method === 'observe') {
         // Metadata-only reattachment preserves the app's current settings.
         await rpc.call('thread/resume', { threadId: sessionId, excludeTurns: true });
+        scheduleName(binding, sessionId);
         return before;
       }
       if (request.method === 'interrupt') {
@@ -207,13 +264,15 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
         before.turn?.id !== (parameters.expectedTurnId ?? undefined) || before.turn !== null || before.state === 'active' ||
         typeof parameters.prompt !== 'string' || parameters.prompt.length > 128000 || !['plan', 'default'].includes(String(parameters.mode))) throw Error('stale_revision');
       // Checked delivery, explicitly NOT an atomic backend compare-and-start.
+      proposeName(binding, sessionId, parameters.prompt, receipt.source.repository);
       fresh.delete(sessionId);
       const result = await rpc.call('turn/start', { threadId: sessionId, input: [{ type: 'text', text: parameters.prompt }],
         collaborationMode: { mode: parameters.mode, settings: { model: parameters.model, reasoning_effort: parameters.reasoning, developer_instructions: null } } });
       if (!result.turn?.id) throw Error('outcome_unknown');
+      scheduleName(binding, sessionId); // Optional metadata cannot hide the initial acknowledgement.
       return { turn: { id: result.turn.id, status: result.turn.status } };
     },
-    close() { rpc.close(); reports.close(); },
+    close() { bridgeClosed = true; rpc.close(); reports.close(); names?.close(); },
   };
 }
 

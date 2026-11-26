@@ -19,7 +19,7 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
   const { loadInstallation, installationShape, preflight, openOperationalRuntime, openDiagnosticsOnly, initializePrivateState, backupDatabase } = await import('../../packages/operations/runtime.ts');
   const { isPublic } = await import('../../packages/operations/installation.ts');
   const { report, invalidInstallation } = await import('../../packages/operations/diagnostics.ts');
-  const { configurationView, extensionView, readStatus, runView } = await import('../../packages/operations/inspection.ts');
+  const { configurationView, extensionView, readStatus, runView, explainRun } = await import('../../packages/operations/inspection.ts');
   const { acquireServiceLock, serviceLoop } = await import('../../packages/operations/loop.ts');
   const { createLocalPolicyAuthority } = await import('../../packages/core/policy.ts');
   const { CleanupStore } = await import('../../packages/storage-sqlite/cleanup.ts');
@@ -56,6 +56,7 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     const checked = await preflight(spec, args[0] === 'doctor', { database: args[0] === 'doctor' });
     const result = report(spec.configuration.enabled, checked.diagnostics); emit(result); if (!result.ok) process.exitCode = 1; return;
   }
+  if (args[0] === 'status' && args.length === 1) { emit(readStatus(spec.stateDirectory,spec.configuration.installationId)); return; }
   if (args[0] === 'metrics' && args.length === 1) {
     const { operationalMetrics } = await import('../../packages/operations/metrics.ts');
     emit(operationalMetrics(spec.stateDirectory, spec.configuration.installationId)); return;
@@ -121,7 +122,7 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     } finally { await release?.(); } return;
   }
   if (args[0] === 'runs') {
-    const readOnly = args[1] === 'list' && args.length === 2 || args[1] === 'show' && args.length === 3;
+    const readOnly = args[1] === 'list' && args.length === 2 || ['show','explain'].includes(args[1]) && args.length === 3;
     const valid = readOnly || ['pause','resume','cancel','reconcile','cleanup'].includes(args[1]) && args.length === 3 || args[1] === 'keep' && args.length === 4 && ['true','false'].includes(args[3]);
     if (!valid) throw Error('usage');
     readStatus(spec.stateDirectory); // Inspect without silently creating/upgrading a database.
@@ -129,6 +130,7 @@ export async function cli(argv: string[], output?: (value: unknown) => void) {
     try {
       if (args[1] === 'list') { emit({ schemaVersion: '1.0', runs: store.runs().map(run => runView(store, run.id)) }); return; }
       if (args[1] === 'show') { emit(runView(store, args[2])); return; }
+      if (args[1] === 'explain') { emit(explainRun(store,args[2])); return; }
       const context = { actorId: 'local-operator', reason: `CLI ${args[1]}`, evidenceRefs: ['operator:local-file-authority'] };
       if (args[1] === 'keep') { const workspace = store.workspace(args[2]); store.setWorkspaceKeep(workspace.id, args[3] === 'true', workspace.revision, authority, context); }
       else if (args[1] === 'cleanup') store.requestCleanup(args[2], `cleanup-request-${randomUUID()}`, authority, context);

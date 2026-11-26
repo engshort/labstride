@@ -113,6 +113,10 @@ export class WorkflowStore extends WorkflowBrokerStore {
     return Object.values(this.runConfiguration(runId)?.configuration.workflows ?? {})
       .some(steps => steps.some(step => step.action === 'labstride.self-build'));
   }
+  managedPhase(runId: string): string | null {
+    const value = this.db.prepare('SELECT name FROM managed_phases WHERE run_id=?').get(runId)?.name;
+    return typeof value === 'string' && ['planning','waiting-accept','working','testing','review'].includes(value) ? value : null;
+  }
   phaseRevision(runId: string, name: string): string {
     if (!/^[a-z-]{1,64}$/.test(name)) throw new LifecycleError('invalid_payload');
     return this.transaction(() => {
@@ -324,6 +328,9 @@ export class WorkflowStore extends WorkflowBrokerStore {
       this.db.prepare('UPDATE managed_effects SET response=? WHERE operation_id=? AND name=?').run(payload, operationId, name);
       if (prior.response === null && evidenceRefs) this.log(operationId, 'managed_effect_observed', { schemaVersion: '1.0', name, evidenceRefs });
     });
+  }
+  unresolvedManagedEffects(operationId: string): string[] {
+    return this.db.prepare('SELECT name FROM managed_effects WHERE operation_id=? AND response IS NULL ORDER BY name').all(operationId).map(row => String(row.name));
   }
   readManagedEffect(operationId: string, name: string): unknown | null {
     const row = this.db.prepare('SELECT response FROM managed_effects WHERE operation_id=? AND name=?').get(operationId, name);

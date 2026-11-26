@@ -18,6 +18,7 @@ export function readStatus(directory: string, installationId?: string) {
   lstatSync(join(directory, 'state.sqlite')); // Keep ENOENT distinct; do not create a DB.
   const db = new DatabaseSync(join(directory, 'state.sqlite'), { readOnly: true });
   try {
+    db.exec('BEGIN');
     verifySchema(db);
     if (db.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') throw Error('storage_failure');
     if (installationId !== undefined) {
@@ -43,7 +44,22 @@ export function readStatus(directory: string, installationId?: string) {
       projections: { pending: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state IN ('pending','reconcile')"),
         blocked: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state='blocked'"),
         conflict: count("SELECT count(*) AS n FROM deliveries WHERE projection_id IS NOT NULL AND state='conflict'") },
-      unknownOperations: count("SELECT count(*) AS n FROM operations WHERE state='outcome_unknown'"), providers };
+      unknownOperations: count("SELECT count(*) AS n FROM operations WHERE state='outcome_unknown'"),
+      unknownEffects: db.prepare(`SELECT o.id,o.run_id,m.name FROM managed_effects m JOIN operations o ON o.id=m.operation_id
+        WHERE m.response IS NULL ORDER BY o.run_id,o.id,m.name`).all().map(row => ({ runId: String(row.run_id), operationId: String(row.id), effect: String(row.name) })),
+      candidates: db.prepare(`SELECT c.id,c.observation,c.source,i.item_id,i.last_error,p.payload,r.code,r.attempts,r.next_at
+        FROM github_candidates c JOIN github_items i ON i.key=c.item_key JOIN github_projects p ON p.key=i.project_key
+        LEFT JOIN github_candidate_retries r ON r.candidate_id=c.id WHERE c.state='pending' ORDER BY c.rowid`).all().map(row => {
+        const observation = JSON.parse(String(row.observation)), source = JSON.parse(String(row.source));
+        const blockers = db.prepare(`SELECT r.id FROM runs r JOIN requests q ON q.id=r.request_id
+          WHERE q.provider_id=? AND q.issue_id=? AND json_extract(r.payload,'$.repositoryId')=? AND
+          (r.state NOT IN ('completed','failed','cancelled') OR EXISTS (SELECT 1 FROM operations o WHERE o.run_id=r.id AND o.state NOT IN ('succeeded','failed','cancelled','superseded'))
+          OR EXISTS (SELECT 1 FROM deliveries d JOIN operations o ON o.id=d.operation_id WHERE o.run_id=r.id AND d.state='conflict')) ORDER BY r.id`)
+          .all(observation.event.provider,observation.event.subjectId,source.repositoryId).map(run => String(run.id));
+        return { candidateId: String(row.id), itemId: String(row.item_id), issueId: String(observation.event.subjectId), generation: Number(observation.generation),
+          code: row.last_error === null && row.code === null ? null : safeReason(row.last_error ?? row.code),
+          attempts: Number(row.attempts ?? 0), nextAttemptAt: row.next_at === null ? null : String(row.next_at), blockingRunIds: blockers };
+      }), providers };
   } finally { db.close(); }
 }
 export function configurationView(spec: Installation) {
@@ -70,8 +86,8 @@ export function extensionView(spec: Installation) {
 }
 export function runView(store: CleanupStore, id: string) {
   const status = store.controlStatus(id);
-  return { ...status, recovery: store.recoveryStatus(),
-    operations: status.operations.map(operation => ({ operationId: operation.operationId, state: operation.state, effectBoundary: operation.effectBoundary,
+  return { ...status, workflowPhase: store.managedPhase(id), recovery: store.recoveryStatus(),
+    operations: status.operations.map(operation => ({ unresolvedEffects: store.unresolvedManagedEffects(operation.operationId), operationId: operation.operationId, state: operation.state, effectBoundary: operation.effectBoundary,
       delivery: operation.delivery ? { id: operation.delivery.id, state: operation.delivery.state, attempts: operation.delivery.attempts,
         code: operation.delivery.lastError ? safeReason(operation.delivery.lastError) : null } : null })),
     workflowExecutions: store.workflowExecutions(id).map(execution => ({ operationId: execution.operationId, sourceSha: execution.sourceSha,
@@ -89,4 +105,31 @@ export function runView(store: CleanupStore, id: string) {
 function safeBrokerUrl(value: string): string | null {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash ? url.href : null; }
   catch { return null; }
+}
+
+/** Local facts only: waiting for human approval is never inferred as permission. */
+export function explainRun(store: CleanupStore, id: string) {
+  const run = runView(store,id), effects = run.operations.flatMap(operation => operation.unresolvedEffects.map(effect => ({ operationId: operation.operationId,effect })));
+  const terminal = ['completed','cancelled','failed'].includes(run.phase);
+  const blockers = [...new Set([run.recovery.paused ? 'recovery_required' : null, effects.length ? 'outcome_unknown' : null,
+    terminal ? null : run.queueReason, run.diagnostic, run.fieldConflicts.length ? 'projection_conflict' : null,
+    !terminal && run.workflowPhase === 'waiting-accept' ? 'waiting_acceptance' : null].filter((value): value is string => value !== null))];
+  const code = blockers[0] ?? null;
+  const next: Record<string,string> = {
+    waiting_acceptance: 'Approve or revise the plan in the registered session; the coordinator cannot approve it.',
+    projection_conflict: 'Inspect the retained field conflict and provider value. Preserve human edits; do not force a projection.',
+    recovery_required: 'Resolve original recovery observations before explicit recovery resume.',
+    outcome_unknown: 'Reconcile the original operation and effect receipts; do not replay or replace them.',
+    cancel_requested: 'Await stable native inactivity and reconciliation of all uncertain effects; retain the workspace and session.',
+    operator_pause: 'Use runs resume only when the operator intends to continue.',
+    human_takeover: 'Continue in the registered session; a human hold requires explicit operator action.',
+    global_capacity: 'Wait for an admitted run to finish or cancel it explicitly.',
+    awaiting_admission: 'Wait for the configured scheduler and inspect capacity, provider and policy status.',
+    issue_conflict: 'Inspect the existing run for this issue before requesting another generation.',
+    repair_budget: 'Review the repair budget before explicit renewal.',
+    unattended_timeout: 'Review unattended work before explicit renewal.',
+  };
+  return { schemaVersion: '1.0' as const, runId: id, phase: run.phase, workflowPhase: run.workflowPhase, blockers, code, nextStep: code ? next[code] ?? 'Inspect the original operation, provider diagnostics and registered session.' :
+    terminal ? 'Execution is terminal; retained sessions, workspaces and historical conflicts remain inspectable.' : 'Await the current operation or inspect the registered session.',
+    unresolvedEffects: effects, status: run };
 }

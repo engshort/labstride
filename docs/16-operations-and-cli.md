@@ -14,6 +14,8 @@ The [prepared-host public profile](40-public-installation.md) implements persona
 | labstride doctor | Check DB, credentials, provider capabilities, SSH and broker reachability |
 | labstride serve | Run coordinator with configured persistent state |
 | labstride serve --reconcile-only | Reconcile an existing fenced public installation without new external effects |
+| labstride status --json | Inspect pending candidates, per-candidate backoff, blocking runs, unknown effect IDs and provider state |
+| labstride runs explain RUN_ID | Explain observed phase, approval wait, holds, conflicts and next step without effects |
 | labstride runs list/show | Explain current phase, blocking reason and evidence |
 | labstride runs pause/resume/cancel | Apply authenticated control intent and report actual state |
 | labstride runs reconcile | Re-observe a run without blindly replaying effects |
@@ -93,3 +95,39 @@ Identity/deduplication records, terminal results, lifecycle audit, claims, contr
 ## Optional cleanup assessment commands
 
 The [W05.1 assessment profile](20-workspace-cleanup.md) adds `runs keep RUN_ID true|false` and `runs cleanup RUN_ID` to the existing CLI configuration-file interface. Keep changes use local-operator authority and expected workspace revisions. Cleanup requests require a frozen `operator_request` cleanup policy; the completion trigger queues its own deduplicated assessments. `runs show` and `runs list` include cleanup requests, selected operations, decisions, evidence and blockers. These commands never set a directory to deleted; #29 owns the qualified removal executor.
+
+## Checked local activation
+
+For the native Linux profile installed by `scripts/install_local.py`, run the
+release's `python3 scripts/activate_local.py` as root. The default checks do not
+start services or enable listening; an administrative lock serializes invocations.
+Use `--configuration PATH` for the exact configuration bound by the generated
+coordinator unit. Run again with `--apply` to start the existing bridge, run doctor,
+atomically enable configuration, enable both units and start the coordinator.
+No new coding daemon, automatic plan approval or provider-field mutation is made.
+The script refuses service overrides and modified releases. Existing deployments
+with reviewed overrides need their separately reviewed activation procedure.
+
+Checks run as the coordinator/coding identities with the service groups; dedicated
+credentials must be readable by the coordinator and unavailable to coding/helper
+users. Configuration and release files must be unwritable by the services.
+Provider field/option bindings and every configured runtime model/reasoning choice
+must resolve. Doctor checks target identity, the bridge catalog and SQLite before
+enablement; successful catalog reads do not establish interactive continuity.
+
+The original disabled configuration is retained in a root-only digest-named backup
+beside the installation file. Replacement retains UID/GID and mode 0640 regardless
+of umask. After an interruption, rerun the same command against the current file;
+completed enablement is retained and start is idempotent. A failed service start
+after enablement does not restore old execution state or withdraw possibly active
+work. Inspect the reported failure and fix its cause before repeating activation.
+For `activation_doctor_blocked` or `activation_configuration_blocked`, run the
+installed `labstride doctor` or `labstride config validate` for safe detailed
+findings. Database upgrades are explicit and remain behind their recovery fence.
+
+`status` and `runs explain` are local read-only snapshots. They neither connect to
+providers nor approve a plan. `workflowPhase` is the last persisted observation;
+startup mode remains the frozen original selection. Uncertain effects are listed
+by name and operation ID without payloads. A projection conflict retains the
+human/provider value and its existing hold. See the [scoped evidence and remaining
+gates](evidence/W01-W02-W06-installation-recovery-2026-11-10.md).

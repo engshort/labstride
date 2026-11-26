@@ -35,6 +35,7 @@ export function removeDeploymentOrderingMigration(db) {
 }
 
 export function removeOperationsMigration(db) {
+  db.exec('DROP TABLE IF EXISTS github_candidate_retries; DELETE FROM schema_migrations WHERE version=22;');
   db.exec(`DROP VIEW IF EXISTS retention_diagnostics; DROP VIEW IF EXISTS retention_resolved_runs;
     DROP TABLE IF EXISTS retention_candidates; DROP TABLE IF EXISTS retention_batches;
     DROP INDEX IF EXISTS execution_log_operation_kind_sequence;

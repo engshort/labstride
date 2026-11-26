@@ -57,3 +57,17 @@ Observed human/provider changes produce a durable field hold and a visible confl
 Migration v12 appends observation streams, membership snapshots, history, generations, candidates and webhook receipts, plus checked-projection attempts and field holds. Migrations v1–v11 and their checksums remain unchanged. Existing atomic attempts default to their original mode; no provider receipt or actor is invented. Pause effects and take a consistent backup before upgrade. There is no automatic down-migration. Restoring an older database requires external-effect reconciliation and the original pinned artifacts/credentials.
 
 The explicit [live probe](../tools/github-reconciliation/probe.mjs) takes an owned test issue identity JSON and separate `GH_PROBE_REPOSITORY_TOKEN` / `GH_PROBE_PROJECT_TOKEN` variables. `--gh-cli` deliberately selects an already authenticated CLI credential instead; it does not establish minimal permissions. It creates and deletes only a new test Project and journals mutation intent/result outside source. Inspect the journal after an uncertain create/delete before rerunning; a fresh probe must not be used to resolve an unknown earlier mutation. The caller closes its owned test issue separately. Its action/pins are public test fixtures, not an SSH workspace or production installation. See the [receipt and acceptance limits](evidence/W02.3-reconciliation-2026-10-23.md).
+
+## Independent candidate admission retries
+
+Scheduling conflicts (`issue_busy`, `revision_conflict`, `capacity_wait`,
+`resource_busy`, `effect_blocked`) belong to the individual pending candidate.
+Migration 22 persists its safe code, attempts, last attempt and next retry time.
+They do not back off the entire provider scope or discard the original authorized
+generation. Unattempted candidates precede retried candidates within the bounded
+16-candidate batch; history-blocked items follow eligible items and remain blocked.
+Provider/transport/rate-limit failures still use scope-level retry and request
+budgets. Every retry refreshes provider facts and passes ordinary admission,
+actor, generation, policy and issue-exclusivity checks. New field observations may
+supersede a pending candidate as before. `labstride status --json` reports pending
+candidate IDs and existing blocking runs without task contents.

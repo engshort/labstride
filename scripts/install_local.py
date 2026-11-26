@@ -286,7 +286,7 @@ WantedBy=multi-user.target
     command(['/usr/bin/systemd-analyze', 'verify', '/etc/systemd/system/labstride.service', '/etc/systemd/system/labstride-bridge.service'])
     command(['/usr/bin/systemctl', 'daemon-reload'])
     print(json.dumps({'schemaVersion': '1.0', 'code': 'installed_disabled', 'revision': manifest['revision'], 'servicesStarted': False,
-                      'next': 'Verify dedicated credentials, root mapping and negative access tests before starting the bridge and running doctor.'}))
+                      'next': 'Run scripts/activate_local.py for service-identity checks, then repeat with --apply for checked activation.'}))
 
 
 if __name__ == '__main__':

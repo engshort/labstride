@@ -91,3 +91,17 @@ Policy optionally defines maxRepairs (default 3) and unattendedMs (default 86400
 `updateRunBudget` requires a versioned revision-bound idempotent request plus evidence-bearing operator context. Explicit renewal retains the total repair count, sets the new limit/deadline and clears the previous failure streak/hold. It grants no effect permission across pause, human, restore, resource or uncertainty holds. The unattended window begins at admission unless an explicit policy renewal records another anchor. Exhaustion blocks forward work while observation/control continue.
 
 `controlStatus` exposes phase/checkpoint, reservations and usage, issue conflicts, operator/human/budget holds, repair count/limits, original operation outcomes and delivery errors, and cancellation outcomes. This is a typed trusted embedding API; the authenticated CLI and live GitHub controls remain W02/W06 work. Migration v8 preserves prior handles/results and defaults older operations to a context granting no new session capability.
+
+## Managed cancellation confirmation
+
+The native self-build action can confirm an explicitly requested task cancellation
+once its registered session has a stable idle double-read observation and every
+managed effect has a known response. It returns the normal cancelled action result;
+the executor and existing run controls own terminal state and capacity release.
+Idle native plans can therefore be cancelled without approving implementation.
+A known interrupt acknowledgement is followed by ordinary reconciliation; a lost
+interrupt/start/publication acknowledgement remains uncertain even if the session
+looks idle. Cancellation retains the native session, workspace and receipts and
+sets the existing keep protection. It does not perform cleanup. The scoped
+[recovery evidence](evidence/W01-W02-W06-installation-recovery-2026-11-10.md) retains
+AC24 and broader installed acceptance gates.

@@ -176,8 +176,22 @@ export class GitHubStore extends ConfigurationStore {
     return validated('actor-evidence',JSON.parse(String(row.evidence)) as ActorEvidence);
   }
   githubCandidates(projectKey: string): GitHubCandidate[] {
-    return this.db.prepare("SELECT c.* FROM github_candidates c JOIN github_items i ON i.key=c.item_key WHERE i.project_key=? AND c.state='pending' ORDER BY c.rowid LIMIT 16").all(projectKey)
+    return this.db.prepare(`SELECT c.* FROM github_candidates c JOIN github_items i ON i.key=c.item_key LEFT JOIN github_candidate_retries r ON r.candidate_id=c.id WHERE i.project_key=? AND c.state='pending'
+      AND i.removed=0 AND (r.next_at IS NULL OR r.next_at<=?)
+      ORDER BY i.last_error IS NOT NULL,coalesce(r.last_attempt,''),c.rowid LIMIT 16`).all(projectKey,this.clock.now())
       .map(row=>({id:String(row.id),itemKey:String(row.item_key),observation:validated<RuleObservation>('rule-observation',JSON.parse(String(row.observation))),source:JSON.parse(String(row.source))}));
+  }
+  retryGitHubCandidate(candidate: GitHubCandidate, code: 'issue_busy' | 'revision_conflict' | 'capacity_wait' | 'resource_busy' | 'effect_blocked'): void {
+    this.transaction(() => {
+      const row = this.db.prepare("SELECT 1 FROM github_candidates WHERE id=? AND state='pending'").get(candidate.id);
+      if (!row) return;
+      const prior = this.db.prepare('SELECT attempts FROM github_candidate_retries WHERE candidate_id=?').get(candidate.id);
+      const attempts = Math.min(20, Number(prior?.attempts ?? 0) + 1), now = this.clock.now();
+      const nextAt = new Date(Date.parse(now) + Math.min(60000, 1000 * 2 ** Math.min(attempts, 6))).toISOString();
+      this.db.prepare(`INSERT INTO github_candidate_retries VALUES (?,?,?,?,?) ON CONFLICT(candidate_id)
+        DO UPDATE SET code=excluded.code,attempts=excluded.attempts,last_attempt=excluded.last_attempt,next_at=excluded.next_at`)
+        .run(candidate.id, code, attempts, now, nextAt);
+    });
   }
   admitGitHubCandidate(candidate: GitHubCandidate, fresh: GitHubItem | null, options: GitHubOptions): ConfigurationReceipt | null {
     if (fresh) fresh=validated('github-item',fresh);
