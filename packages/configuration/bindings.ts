@@ -4,9 +4,10 @@ import type { HostProfile } from '../extensions/loader.ts';
 import { inspectExtension } from '../extensions/loader.ts';
 import { ConfigurationError, fieldValue, invalid, own } from './values.ts';
 import type { Value } from './values.ts';
+import type { LabstrideOperationRequestV1 } from '../../contracts/generated/operation.ts';
 
 export interface BindingContext {
-  source?: { repositoryId: string; repository: string; sha: string };
+  source?: LabstrideOperationRequestV1['source'];
   mergeSha?: string; workspaceId?: string;
 }
 export interface BoundStep { id: string; actionId: string; actionVersion: string; inputs: Record<string, unknown> }
@@ -38,7 +39,7 @@ function contextValue(key: string, context: BindingContext): unknown {
     const source = value as BindingContext['source'];
     if (!source || typeof source.repositoryId !== 'string' || !source.repositoryId || typeof source.repository !== 'string' ||
       !source.repository || typeof source.sha !== 'string' || !/^[a-f0-9]{40}$/.test(source.sha) ||
-      Object.keys(source).some(k => !['repositoryId','repository','sha'].includes(k)))
+      Object.keys(source).some(k => !['repositoryId','repository','sha','issue'].includes(k)))
       throw new ConfigurationError('binding_invalid', '/context/source', 'Provide a validated source identity and revision.');
   } else if (typeof value !== 'string' || !value || (key === 'mergeSha' && !/^[a-f0-9]{40}$/.test(value)))
     throw new ConfigurationError('binding_invalid', '/context', 'Provide the recorded typed context value.');

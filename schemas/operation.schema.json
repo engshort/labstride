@@ -50,6 +50,9 @@
         "sha": {
           "type": "string",
           "pattern": "^[a-f0-9]{40}$"
+        },
+        "issue": {
+          "$ref": "contract-common.schema.json#/$defs/githubIssue"
         }
       },
       "required": [

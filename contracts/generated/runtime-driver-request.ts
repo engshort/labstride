@@ -629,6 +629,7 @@ export interface OwnedWorkspaceCreationReceiptV1 {
     repositoryId: string;
     repository: string;
     sha: string;
+    issue?: GithubIssue;
   };
   directoryIdentity: {
     device: number;
@@ -643,4 +644,8 @@ export interface OwnedWorkspaceCreationReceiptV1 {
     uid: number;
   };
   state: "ready";
+}
+export interface GithubIssue {
+  number: number;
+  title: string;
 }

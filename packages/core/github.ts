@@ -5,6 +5,7 @@ import type { CompiledConfiguration } from '../configuration/compiler.ts';
 import type { RuleObservation } from '../configuration/rules.ts';
 import type { BoundStep } from '../configuration/bindings.ts';
 import type { StartPlan } from './execution.ts';
+import type { LabstrideOperationRequestV1 } from '../../contracts/generated/operation.ts';
 import type { ProjectionAdapter } from './observations.ts';
 import type { GitHubStore } from '../storage-sqlite/github.ts';
 import type { LabstrideInstallationConfigurationV1 } from '../../contracts/generated/config.ts';
@@ -18,7 +19,7 @@ export interface GitHubItemJob {
 }
 export interface GitHubCandidate {
   id: string; itemKey: string; observation: RuleObservation;
-  source: { repositoryId: string; repository: string; sha: string };
+  source: LabstrideOperationRequestV1['source'];
 }
 export interface GitHubReader {
   readonly providerId: string;

@@ -13,7 +13,7 @@ const config={github:{repositories:['owner/repo'],credentialRef:'secret:reposito
 const qualification={schemaVersion:'1.0',scopeId:'repo-a',fieldId:'request-a',subjectId:'issue-a',eventId:'qualification',actorId:'operator-test',optionId:'go-a',status:'Start'};
 function provider(){
  const state={permission:'WRITE',canSet:true,owner:'Organization',events:[event],requests:[],values:[{__typename:'IssueFieldSingleSelectValue',field:{id:'request-a'},optionId:'go-a',value:'Start'},{__typename:'IssueFieldTextValue',field:{id:'path-a'},value:'context.source'}]};
- const issue=()=>({__typename:'Issue',id:'issue-a',updatedAt:event.createdAt,title:'Owned',body:'',state:'OPEN',viewerCanSetFields:state.canSet,repository:{id:'repo-a',nameWithOwner:'owner/repo',defaultBranchRef:{target:{oid:'a'.repeat(40)}}},issueFieldValues:{nodes:state.values,pageInfo:page}});
+ const issue=()=>({__typename:'Issue',id:'issue-a',number:123,updatedAt:event.createdAt,title:'Owned',body:'',state:'OPEN',viewerCanSetFields:state.canSet,repository:{id:'repo-a',nameWithOwner:'owner/repo',defaultBranchRef:{target:{oid:'a'.repeat(40)}}},issueFieldValues:{nodes:state.values,pageInfo:page}});
  const client=new GitHubClient({credential:async ref=>{assert.equal(ref,'secret:repository');return 'opaque';},requestsPerTick:100,fetch:async(_url,init)=>{
   const body=JSON.parse(init.body);state.requests.push(body);let data;
   if(body.query.includes('LabstrideIssueFieldOwner'))data={node:{id:'repo-a',nameWithOwner:'owner/repo',viewerPermission:state.permission,owner:{__typename:state.owner,id:'org-a'}}};
@@ -28,7 +28,7 @@ function provider(){
 }
 test('native issue bindings qualify field-specific actor history without Project membership',async()=>{
  const {state,adapter}=provider();const description=await adapter.describeField(config.fields.request,'secret:repository');assert.equal(description.history,true);assert.equal(description.writable,true);
- const snapshot=await adapter.item('issue-a');assert.equal(snapshot.scopeId,'repo-a');assert.equal(snapshot.itemId,snapshot.subjectId);assert.deepEqual(snapshot.fields.path,{present:true,value:'context.source'});
+ const snapshot=await adapter.item('issue-a');assert.equal(snapshot.scopeId,'repo-a');assert.equal(snapshot.itemId,snapshot.subjectId);assert.deepEqual(snapshot.issue,{number:123,title:'Owned'});assert.deepEqual(snapshot.fields.path,{present:true,value:'context.source'});
  assert.equal((await adapter.list('repo-a',null)).items.length,1);assert.equal((await adapter.history('issue-a',null)).events[0].fieldId,'request-a');
  state.events=[{...event,issueField:{...selection,id:'another-field'}}];adapter.beginTick();await assert.rejects(adapter.describeField(config.fields.request,'secret:repository'),error=>error.code==='history_unavailable');
 });

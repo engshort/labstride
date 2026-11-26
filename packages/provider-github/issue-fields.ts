@@ -6,13 +6,14 @@ import {GitHubError} from '../core/github.ts';
 import {object,string,nodes,pageInfo} from './client.ts';
 import {validated} from '../storage-sqlite/validation.ts';
 import {createGitHubProjection} from './projection.ts';
+import { issueMetadata } from '../core/issue-naming.ts';
 
 const definitions=`__typename ... on IssueFieldSingleSelect{id name dataType options{id name}}
  ... on IssueFieldText{id name dataType} ... on IssueFieldNumber{id name dataType} ... on IssueFieldDate{id name dataType}`;
 const valueFields=`__typename ... on IssueFieldSingleSelectValue{optionId value field{... on IssueFieldSingleSelect{id}}}
  ... on IssueFieldTextValue{value field{... on IssueFieldText{id}}} ... on IssueFieldNumberValue{value field{... on IssueFieldNumber{id}}}
  ... on IssueFieldDateValue{value field{... on IssueFieldDate{id}}}`;
-const issueFields=`__typename id updatedAt title body state viewerCanSetFields repository{id nameWithOwner defaultBranchRef{target{oid}}}
+const issueFields=`__typename id number updatedAt title body state viewerCanSetFields repository{id nameWithOwner defaultBranchRef{target{oid}}}
  issueFieldValues(first:100){nodes{${valueFields}} pageInfo{hasNextPage endCursor}}`;
 const eventFields=`__typename ... on IssueFieldAddedEvent{id createdAt value options{name} issueField{${definitions}} actor{__typename ... on User{id} ... on Bot{id}}}
  ... on IssueFieldChangedEvent{id createdAt previousValue newValue previousOptions{name} newOptions{name} issueField{${definitions}} actor{__typename ... on User{id} ... on Bot{id}}}
@@ -114,8 +115,9 @@ export class GitHubIssueFieldsAdapter implements GitHubReader {
       if(field.type==='single-select'&&!options.some(option=>option.id===current))throw new GitHubError('binding_invalid');
       fields[logical]={present:true,value:current as string|number};
     }
+    const issue=issueMetadata(raw.number,raw.title);
     return validated('github-item',{schemaVersion:'1.0',scopeId,itemId:string(raw.id),subjectId:string(raw.id),repositoryId:scopeId,repository,
-      sourceSha:string(object(object(repo.defaultBranchRef).target).oid),updatedAt:string(raw.updatedAt),fields,optionNames} as GitHubItem);
+      sourceSha:string(object(object(repo.defaultBranchRef).target).oid),updatedAt:string(raw.updatedAt),fields,optionNames,...(issue ? { issue } : {})} as GitHubItem);
   }
   async list(scopeId:string,cursor:string|null){
     await this.definitions(scopeId);

@@ -8,7 +8,7 @@ W03.1 implements [enrollment, the installed connector and trusted helper registr
 
 Use the system SSH client or a reviewed library selected in W00. Enforce host-key checking. Do not use trust-on-first-use silently, disable host checks or copy private keys into the agent's repository.
 
-Transmit structured payloads over stdin to a fixed versioned target helper. Remote shell construction must not contain issue-provided commands, paths or unchecked values. Use generated opaque directory/branch identifiers; optional human labels are sanitized display metadata only.
+Transmit structured payloads over stdin to a fixed versioned target helper. Remote shell construction must not contain issue-provided commands, paths or unchecked values. Use generated opaque directory identifiers. Branch names may include sanitized native issue labels with a suffix derived from the protected workspace locator. Authorization, cleanup and recovery still require the protected ownership receipt.
 
 ## Creating a workspace
 

@@ -27,10 +27,15 @@ export interface LabstrideOperationRequestV1 {
     repositoryId: string;
     repository: string;
     sha: string;
+    issue?: GithubIssue;
   };
   targetId: string;
   deadline: string;
   inputs: {
     [k: string]: unknown;
   };
+}
+export interface GithubIssue {
+  number: number;
+  title: string;
 }

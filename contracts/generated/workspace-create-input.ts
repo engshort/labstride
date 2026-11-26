@@ -7,5 +7,10 @@ export interface WorkspaceCreateInputsV1 {
     repositoryId: string;
     repository: string;
     sha: string;
+    issue?: GithubIssue;
   };
+}
+export interface GithubIssue {
+  number: number;
+  title: string;
 }

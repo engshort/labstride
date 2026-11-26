@@ -1,5 +1,6 @@
 import { connect, createServer } from 'node:net';
 import { safeError } from '../core/diagnostics.ts';
+import { issueThreadName } from '../core/issue-naming.ts';
 import { accessSync, constants, chmodSync, lstatSync, readFileSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ import { existingCheckout, type ExistingCheckoutPolicy } from './existing-checko
 const maxWire = 24 * 1024 * 1024;
 export interface BridgeBinding { runId: string; workspaceId: string; path: string; receiptDigest: string; workingPath?: string }
 export interface BridgeRequest { schemaVersion: '1.0'; method: 'catalog' | 'start' | 'turn' | 'observe' | 'bundle' | 'interrupt' | 'cleanup-observe' |
-  'checkout-probe' | 'checkout-prepare' | 'checkout-inspect';
+  'checkout-probe' | 'checkout-prepare' | 'checkout-inspect' | 'name';
   binding?: BridgeBinding; sessionId?: string; parameters?: Record<string, unknown> }
 export interface BridgePort { call(request: BridgeRequest): Promise<any> }
 export class BridgeClient implements BridgePort {
@@ -214,6 +215,15 @@ export function createCodexBridge(policy: BridgePolicy, rpc: any = new UnixRpc(p
       const sessionId = request.sessionId;
       if (!sessionId || !/^[a-z0-9-]{1,128}$/i.test(sessionId)) throw Error('identity_mismatch');
       if (checkout) reports.verifyCheckoutSession(binding, sessionId);
+      if (request.method === 'name') {
+        if (Object.keys(parameters).length || !receipt.source.issue) throw Error('validation_failed');
+        const name = issueThreadName(receipt.source.repository, receipt.source.issue);
+        const thread = await readThread(binding, sessionId);
+        if (thread.name !== null) return { status: thread.name === name ? 'named' : 'preserved' };
+        await rpc.call('thread/name/set', { threadId: sessionId, name });
+        if ((await readThread(binding, sessionId)).name !== name) throw Error('outcome_unknown');
+        return { status: 'named' };
+      }
       if (request.method === 'cleanup-observe') {
         // Read metadata only. No resume, report recovery, turn or interrupt.
         const read = async () => {
