@@ -50,3 +50,22 @@ test('bundle head, branch and source metadata cannot replace the registered publ
   }
   assert.throws(() => preparePublication(f.bundle, { ...f.identity, baseSha: f.identity.baseSha + '\n' }), /identity_mismatch/);
 });
+
+test('a follow-up must contain the previously published head', async t => {
+  const f = await fixture(t);
+  const published = { headSha: 'b'.repeat(40), baseSha: f.identity.baseSha };
+  assert.throws(() => preparePublication(f.bundle, f.identity, runGit, published), /publication_published_ancestry_failed/);
+});
+
+test('a follow-up can keep the previously verified workflows when main has moved again', async t => {
+  const f = await fixture(t);
+  const prepared = preparePublication(f.bundle, f.identity, runGit, { headSha: f.identity.baseSha, baseSha: 'b'.repeat(40) });
+  t.after(() => prepared.close());
+  assert.equal(runGit(prepared.bare, ['rev-parse', 'FETCH_HEAD']), f.identity.sha);
+});
+
+for (const baseSha of ['observed', 'advanced']) test(`a follow-up cannot change workflows beyond the ${baseSha} baseline`, async t => {
+  const f = await fixture(t, { workflow: true });
+  const published = { headSha: f.identity.baseSha, baseSha: baseSha === 'observed' ? f.identity.baseSha : 'b'.repeat(40) };
+  assert.throws(() => preparePublication(f.bundle, f.identity, runGit, published), /ci_definition_changed/);
+});

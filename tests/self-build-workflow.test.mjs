@@ -25,7 +25,8 @@ import { directoryIdentity } from '../packages/target-helper/filesystem.ts';
 // Real checkout, bundle verification, local Git push and SQLite sequencing.
 // GitHub and Codex wire responses are controlled peers, not live qualification.
 async function setup(t, { losePrReply = false, loseStartReply = false, supported = true, nativeReports = false, losePushReply = false,
-  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog, useExistingCheckout = false, loseCheckoutReply = false, issue, originalName = null, loseNameReply = false } = {}) {
+  prepareFailure = false, loseReadyReply = false, modelProfile, modelCatalog, useExistingCheckout = false, loseCheckoutReply = false,
+  issue, originalName = null, loseNameReply = false, loseBranchReply = false } = {}) {
   // The in-process helper and coordinator must share the fixture's clock;
   // otherwise its fixed one-day request expires with the real calendar.
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T12:00:00.000Z') });
@@ -103,9 +104,11 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
   f.store.advanceWorkflows(f.dependencies.host); assert.equal(f.store.operations(run.id).length, 2);
   const op = f.store.operations(run.id)[1].request, state = { starts: 0, turns: 0, latest: { id: 'initial', status: 'completed' }, report: null, creates: 0, pr: null, loss: losePrReply, startLoss: loseStartReply,
     pushes: 0, credentialReads: 0, pushLoss: losePushReply, prepareFailure, headConflict: false, readyLoss: loseReadyReply, readies: 0, changeTurnOnBundle: false,
-    greenSha: null, checkoutPrepares: 0, checkoutInspections: 0, name: originalName };
+    greenSha: null, checkoutPrepares: 0, checkoutInspections: 0, name: originalName, branchCreates: 0 };
   const remote = join(source.root, 'published.git'); runGit(source.root, ['-c', 'protocol.file.allow=always', 'clone', '--bare', '--no-hardlinks', source.repository, remote]);
+  runGit(remote, ['update-ref', 'refs/heads/main', source.operation.source.sha]);
   const branchSha = () => runGit(remote, ['rev-parse', `refs/heads/${workspace.branch}`]);
+  const baseSha = () => runGit(remote, ['rev-parse', 'refs/heads/main']);
   const git = args => runGit(cwd, ['-c', `safe.directory=${cwd}`, ...args]);
   let bridge = { async call(request) {
     if (request.method === 'catalog') return { models };
@@ -154,16 +157,29 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     t.after(() => nativeBridge.close());
   }
   const rest = { reference: 'secret:repository', credential: async () => { state.credentialReads++; return 'synthetic'; }, async request(method, path, input) {
+    if (method === 'POST' && path.endsWith('/git/refs')) {
+      state.branchCreates++;
+      assert.deepEqual(input, { ref: `refs/heads/${workspace.branch}`, sha: source.operation.source.sha });
+      assert.equal(state.turns, 0);
+      runGit(remote, ['update-ref', input.ref, input.sha, '0'.repeat(40)]);
+      if (loseBranchReply) throw Error('transport_unknown');
+      return { ref: input.ref, object: { sha: input.sha } };
+    }
+    if (path.endsWith('/git/ref/heads/main')) return { ref: 'refs/heads/main', object: { sha: baseSha(), type: 'commit' } };
     if (path.includes('/git/ref/')) {
-      if (state.pushLoss) { state.pushLoss = false; throw Error('provider_unavailable'); }
+      if (state.pushes && state.pushLoss) { state.pushLoss = false; throw Error('provider_unavailable'); }
       return { ref: `refs/heads/${workspace.branch}`, object: { sha: state.headConflict ? 'f'.repeat(40) : branchSha() } };
     }
     if (method === 'POST' && path.endsWith('/pulls')) {
       state.creates++; state.pr = { number: 42, node_id: 'pull-42', state: 'open', body: input.body, title: input.title, draft: true,
-        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } }, base: { ref: 'main' }, html_url: 'https://github.com/example/source/pull/42' };
+        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } },
+        base: { ref: 'main', sha: baseSha(), repo: { node_id: source.operation.source.repositoryId } }, html_url: 'https://github.com/example/source/pull/42' };
       if (state.loss) { state.loss = false; throw Error('transport_unknown'); } return state.pr;
     }
-    if (path.includes('/pulls')) { if (state.pr) state.pr.head.sha = branchSha(); return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr; }
+    if (path.includes('/pulls')) {
+      if (state.pr) state.pr.head.sha = branchSha();
+      return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr;
+    }
     if (path.includes('/actions/runs')) return { workflow_runs: [{ id: 1, check_suite_id: 7, path: options.requiredWorkflows[0], head_sha: state.greenSha ?? branchSha(), event: 'pull_request', status: 'completed', conclusion: 'success' }] };
     if (path.includes('/check-runs')) return { check_runs: [{ id: 1, head_sha: state.greenSha ?? branchSha(), check_suite: { id: 7 }, name: 'verify', app: { id: 1 }, status: 'completed', conclusion: 'success' }] };
     if (path.includes('/statuses')) return [];
@@ -204,6 +220,19 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     active = components(store);
     return store;
   };
+  function changeDefaultWorkflow() {
+    const checkout = join(source.root, 'new-default');
+    runGit(remote, ['worktree', 'add', '--detach', checkout, source.operation.source.sha]);
+    mkdirSync(join(checkout, '.github/workflows'), { recursive: true });
+    writeFileSync(join(checkout, options.requiredWorkflows[0]), 'name: Updated checks\n');
+    runGit(checkout, ['add', options.requiredWorkflows[0]]);
+    runGit(checkout, ['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Update default workflows']);
+    runGit(remote, ['update-ref', 'refs/heads/main', runGit(checkout, ['rev-parse', 'HEAD'])]);
+  }
+  function mergeDefaultWorkflow() {
+    git(['-c', 'protocol.file.allow=always', 'fetch', remote, 'main']);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'merge', '--no-ff', '--signoff', '--no-edit', 'FETCH_HEAD']);
+  }
   function commit(file, message = 'Implement issue') {
     writeFileSync(join(cwd, file), 'implemented\n'); git(['add', file]);
     git(['-c','user.name=Test','-c','user.email=test@example.test','commit','--signoff','-m',message]);
@@ -216,7 +245,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       state.latest.status = 'completed';
     }
   }
-  return { ...f, run, op, state, cwd, tick, commit, action: active.action, provider, observer: active.observer, branchSha, nativeCalls, restart };
+  return { ...f, run, op, state, cwd, tick, commit, action: active.action, provider, observer: active.observer, branchSha, nativeCalls, restart, changeDefaultWorkflow, mergeDefaultWorkflow };
 }
 
 const modelProfile = JSON.parse(readFileSync(new URL('../examples/operational-installation.json', import.meta.url)));
@@ -287,8 +316,12 @@ test('checkout advances to the original Plan session and publishes follow-up com
   assert.equal(f.store.managedSession(f.run.id).sessionId, 'original-session');
   f.commit('first.txt'); await f.tick(); await f.tick();
   assert.equal(f.state.creates, 1, JSON.stringify({diagnostic:f.store.workflowDiagnostic(f.run.id),operations:f.store.controlStatus(f.run.id).operations})); assert.equal(f.state.pr.draft, false); assert.equal(f.state.pr.head.sha, f.state.report.commitSha);
+  const firstSha = f.branchSha();
+  f.changeDefaultWorkflow();
+  f.mergeDefaultWorkflow();
   f.state.pr.title = 'Human review title'; f.commit('second.txt'); await f.tick(); await f.tick();
   assert.equal(f.state.creates, 1, JSON.stringify({diagnostic:f.store.workflowDiagnostic(f.run.id),operations:f.store.controlStatus(f.run.id).operations})); assert.equal(f.state.pr.title, 'Human review title'); assert.equal(f.branchSha(), f.state.report.commitSha);
+  runGit(f.cwd, ['merge-base', '--is-ancestor', firstSha, f.branchSha()]);
   assert.equal(f.store.managedProjectionDiagnostics(f.run.id).length, 0);
   assert.equal(f.store.get('operation', f.op.operationId).state, 'running');
   assert.equal(f.store.workflowDiagnostic(f.run.id), null);
@@ -385,6 +418,37 @@ test('a lost PR creation response adopts exact independent PR evidence without c
   assert.equal(f.state.creates, 1); assert.equal(f.state.pushes, 1);
   assert.equal(f.store.readManagedEffect(f.op.operationId, 'pull-request-create').number, f.state.pr.number);
   assert.equal(f.store.get('operation', f.op.operationId).state, 'running');
+});
+
+test('a lost branch creation reply is read back before the first turn and the exact report opens one PR', async t => {
+  const f = await setup(t, { loseBranchReply: true, nativeReports: true });
+  for (let i = 0; i < 8 && !f.state.branchCreates; i++) await f.tick();
+  assert.equal(f.state.turns, 0);
+  assert.equal(f.branchSha(), f.op.source.sha);
+  assert.equal(f.store.readManagedEffect(f.op.operationId, 'publication-branch'), null);
+  const store = f.restart();
+  for (let i = 0; i < 8 && !f.state.turns; i++) await f.tick();
+  assert.equal(f.state.turns, 1);
+  assert.equal(store.readManagedEffect(f.op.operationId, 'publication-branch').sha, f.op.source.sha);
+  f.changeDefaultWorkflow();
+  assert.equal(f.branchSha(), f.op.source.sha);
+  f.commit('branch-ready.txt');
+  await f.tick(); await f.tick();
+  assert.equal(f.state.branchCreates, 1);
+  assert.equal(f.state.pushes, 1);
+  assert.equal(f.state.creates, 1);
+  assert.equal(f.state.pr.head.sha, f.state.report.commitSha);
+});
+
+test('an unconfirmed publication branch at a different revision prevents coding and another create', async t => {
+  const f = await setup(t, { loseBranchReply: true });
+  for (let i = 0; i < 8 && !f.state.branchCreates; i++) await f.tick();
+  f.state.headConflict = true;
+  for (let i = 0; i < 4; i++) await f.tick();
+  assert.equal(f.state.branchCreates, 1);
+  assert.equal(f.state.turns, 0);
+  assert.equal(f.state.pushes, 0);
+  assert.equal(f.store.readManagedEffect(f.op.operationId, 'publication-branch'), null);
 });
 
 test('failed local preparation records no push intent or credential read and can be retried safely', async t => {
