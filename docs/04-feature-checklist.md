@@ -257,7 +257,7 @@ Specification: [09-github-and-workflow-contract.md](09-github-and-workflow-contr
 
 - Missing/pending/failed required checks block merge; a new head invalidates earlier green evidence.
 
-Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W04-W06-native-history-2026-10-24.md, evidence/W04-W06-report-journal-2026-10-24.md, evidence/W04-W06-shallow-publication-2026-10-24.md, evidence/W04-W06-bounded-report-observation-2026-10-24.md, evidence/W04.3-merge-gate-2026-10-24.md
+Verification evidence: evidence/W04-W06-local-self-build-2026-10-24.md, evidence/W04-W06-native-history-2026-10-24.md, evidence/W04-W06-report-journal-2026-10-24.md, evidence/W04-W06-shallow-publication-2026-10-24.md, evidence/W04-W06-bounded-report-observation-2026-10-24.md, evidence/W04-publication-branch-2026-11-27.md, evidence/W04.3-merge-gate-2026-10-24.md
 
 Implementation issue: [#26](https://github.com/alex-engvall/labstride/issues/26).
 
