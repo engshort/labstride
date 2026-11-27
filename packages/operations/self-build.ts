@@ -115,6 +115,24 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
     const observed = await observePublicationRef(repository, branch, sha);
     store.finishManagedEffect(op.operationId, name, observed, [`github:ref:${repository}:${branch}:${sha}`]);
   }
+  async function publishedBase(op: Operation, branch: string, reportSha: string) {
+    const registered = store.registeredPullRequest(op.runId);
+    if (!registered || registered.sha === reportSha) return undefined;
+    const created = store.readManagedEffect(op.operationId, 'pull-request-create') as { number: number; node_id: string } | null;
+    if (!created || created.number !== registered.number || typeof created.node_id !== 'string' || !created.node_id) throw Error('pull_request_conflict');
+    const { repository, repositoryId } = op.source;
+    const pr = await rest.request('GET', `/repos/${repository}/pulls/${registered.number}`);
+    if (pr?.state !== 'open' || pr.number !== registered.number || pr.node_id !== created.node_id ||
+      typeof pr.body !== 'string' || !pr.body.includes(`<!-- labstride:${op.runId} -->`) ||
+      pr.head?.repo?.node_id !== repositoryId || pr.head?.ref !== branch || pr.head?.sha !== registered.sha ||
+      pr.base?.repo?.node_id !== repositoryId || pr.base?.ref !== options.baseBranch)
+      throw Error('pull_request_conflict');
+    const ref = await rest.request('GET', `/repos/${repository}/git/ref/heads/${encodeURIComponent(options.baseBranch)}`);
+    const baseSha = ref?.object?.sha;
+    if (ref?.ref !== `refs/heads/${options.baseBranch}` || ref.object?.type !== 'commit' ||
+      typeof baseSha !== 'string' || !/^[a-f0-9]{40}$/.test(baseSha)) throw Error('invalid_provider_data');
+    return { headSha: registered.sha, baseSha };
+  }
   async function publish(op: Operation, report: NonNullable<ReturnType<WorkflowStore['managedReport']>>, bind: BridgeBinding) {
     const suffix = report.commitSha.slice(0, 20), workspace = store.workspace(op.runId), source = op.source;
     const path = `/repos/${source.repository}`;
@@ -132,7 +150,8 @@ export function createSelfBuildAction(store: WorkflowStore, options: Options, gi
         store.finishManagedEffect(op.operationId, pushName, observed, [`github:ref:${source.repository}:${workspace.branch}:${report.commitSha}`]);
       } else {
         const bundle = await bridge.call({ schemaVersion: '1.0', method: 'bundle', binding: bind, parameters: { sha: report.commitSha } });
-        const prepared = preparePublication(bundle, { sha: report.commitSha, baseSha: source.sha, branch: workspace.branch }, publishGit);
+        const base = await publishedBase(op, workspace.branch, report.commitSha);
+        const prepared = preparePublication(bundle, { sha: report.commitSha, baseSha: source.sha, branch: workspace.branch }, publishGit, base);
         try {
           const token = await rest.credential(rest.reference), url = `https://github.com/${source.repository}.git`;
           await currentResult();

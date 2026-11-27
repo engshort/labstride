@@ -426,7 +426,8 @@
       ],
       "spec": "09-github-and-workflow-contract.md",
       "acceptance_criteria": [
-        "Missing/pending/failed required checks block merge; a new head invalidates earlier green evidence."
+        "Missing/pending/failed required checks block merge; a new head invalidates earlier green evidence.",
+        "Managed PR updates preserve the published head and distinguish workflow changes inherited from the verified base from changes introduced by the report."
       ],
       "implementation_pr": "https://github.com/engshort/labstride/pull/65",
       "verification_evidence": [

@@ -18,6 +18,8 @@ A versioned native result report identifies the completed turn and exact commit.
 
 Missing, pending, failed or skipped checks in required workflow suites prevent readiness. Match every suite and check to the current head; optional deployment jobs in other suites do not become required when deployment is disabled. Only successful configured repository workflows, check runs and statuses on the current PR head permit Waiting for review. Keep observing the same session for follow-up commits. Merged requires an observed GitHub merge with the recorded head. Deploy and automatic merge are disabled. Repository-owned CI must already exist on the base branch before a real self-build can pass; merging the implementation PR is an operator prerequisite.
 
+An update to an open, registered PR must contain its independently read, previously published head. If the update also contains the independently observed GitHub base tip, workflow validation uses that tip and DCO validation excludes commits already present on either trusted branch. Otherwise the published head supplies the workflow baseline. This allows a normal fast-forward update after merging the base branch and still verifies any new workflow changes and sign-offs.
+
 ## CLI and service
 
 The executable entry point is `node apps/cli/main.ts`; the administrative bootstrap installs a `labstride` launcher for root to run it as the coordinator identity. Commands return JSON with safe codes and exit status; `--human` provides diagnostic/inspection formatting. The [public prepared-host profile](40-public-installation.md) adds a separate v2 configuration without native fields or a bridge.

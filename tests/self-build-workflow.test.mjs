@@ -106,7 +106,9 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     pushes: 0, credentialReads: 0, pushLoss: losePushReply, prepareFailure, headConflict: false, readyLoss: loseReadyReply, readies: 0, changeTurnOnBundle: false,
     greenSha: null, checkoutPrepares: 0, checkoutInspections: 0, name: originalName, branchCreates: 0 };
   const remote = join(source.root, 'published.git'); runGit(source.root, ['-c', 'protocol.file.allow=always', 'clone', '--bare', '--no-hardlinks', source.repository, remote]);
+  runGit(remote, ['update-ref', 'refs/heads/main', source.operation.source.sha]);
   const branchSha = () => runGit(remote, ['rev-parse', `refs/heads/${workspace.branch}`]);
+  const baseSha = () => runGit(remote, ['rev-parse', 'refs/heads/main']);
   const git = args => runGit(cwd, ['-c', `safe.directory=${cwd}`, ...args]);
   let bridge = { async call(request) {
     if (request.method === 'catalog') return { models };
@@ -163,16 +165,21 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       if (loseBranchReply) throw Error('transport_unknown');
       return { ref: input.ref, object: { sha: input.sha } };
     }
+    if (path.endsWith('/git/ref/heads/main')) return { ref: 'refs/heads/main', object: { sha: baseSha(), type: 'commit' } };
     if (path.includes('/git/ref/')) {
       if (state.pushes && state.pushLoss) { state.pushLoss = false; throw Error('provider_unavailable'); }
       return { ref: `refs/heads/${workspace.branch}`, object: { sha: state.headConflict ? 'f'.repeat(40) : branchSha() } };
     }
     if (method === 'POST' && path.endsWith('/pulls')) {
       state.creates++; state.pr = { number: 42, node_id: 'pull-42', state: 'open', body: input.body, title: input.title, draft: true,
-        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } }, base: { ref: 'main' }, html_url: 'https://github.com/example/source/pull/42' };
+        head: { ref: workspace.branch, sha: branchSha(), repo: { node_id: source.operation.source.repositoryId } },
+        base: { ref: 'main', sha: baseSha(), repo: { node_id: source.operation.source.repositoryId } }, html_url: 'https://github.com/example/source/pull/42' };
       if (state.loss) { state.loss = false; throw Error('transport_unknown'); } return state.pr;
     }
-    if (path.includes('/pulls')) { if (state.pr) state.pr.head.sha = branchSha(); return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr; }
+    if (path.includes('/pulls')) {
+      if (state.pr) state.pr.head.sha = branchSha();
+      return path.includes('?') ? state.pr ? [state.pr] : [] : state.pr;
+    }
     if (path.includes('/actions/runs')) return { workflow_runs: [{ id: 1, check_suite_id: 7, path: options.requiredWorkflows[0], head_sha: state.greenSha ?? branchSha(), event: 'pull_request', status: 'completed', conclusion: 'success' }] };
     if (path.includes('/check-runs')) return { check_runs: [{ id: 1, head_sha: state.greenSha ?? branchSha(), check_suite: { id: 7 }, name: 'verify', app: { id: 1 }, status: 'completed', conclusion: 'success' }] };
     if (path.includes('/statuses')) return [];
@@ -222,6 +229,10 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
     runGit(checkout, ['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Update default workflows']);
     runGit(remote, ['update-ref', 'refs/heads/main', runGit(checkout, ['rev-parse', 'HEAD'])]);
   }
+  function mergeDefaultWorkflow() {
+    git(['-c', 'protocol.file.allow=always', 'fetch', remote, 'main']);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'merge', '--no-ff', '--signoff', '--no-edit', 'FETCH_HEAD']);
+  }
   function commit(file, message = 'Implement issue') {
     writeFileSync(join(cwd, file), 'implemented\n'); git(['add', file]);
     git(['-c','user.name=Test','-c','user.email=test@example.test','commit','--signoff','-m',message]);
@@ -234,7 +245,7 @@ async function setup(t, { losePrReply = false, loseStartReply = false, supported
       state.latest.status = 'completed';
     }
   }
-  return { ...f, run, op, state, cwd, tick, commit, action: active.action, provider, observer: active.observer, branchSha, nativeCalls, restart, changeDefaultWorkflow };
+  return { ...f, run, op, state, cwd, tick, commit, action: active.action, provider, observer: active.observer, branchSha, nativeCalls, restart, changeDefaultWorkflow, mergeDefaultWorkflow };
 }
 
 const modelProfile = JSON.parse(readFileSync(new URL('../examples/operational-installation.json', import.meta.url)));
@@ -305,8 +316,12 @@ test('checkout advances to the original Plan session and publishes follow-up com
   assert.equal(f.store.managedSession(f.run.id).sessionId, 'original-session');
   f.commit('first.txt'); await f.tick(); await f.tick();
   assert.equal(f.state.creates, 1, JSON.stringify({diagnostic:f.store.workflowDiagnostic(f.run.id),operations:f.store.controlStatus(f.run.id).operations})); assert.equal(f.state.pr.draft, false); assert.equal(f.state.pr.head.sha, f.state.report.commitSha);
+  const firstSha = f.branchSha();
+  f.changeDefaultWorkflow();
+  f.mergeDefaultWorkflow();
   f.state.pr.title = 'Human review title'; f.commit('second.txt'); await f.tick(); await f.tick();
   assert.equal(f.state.creates, 1, JSON.stringify({diagnostic:f.store.workflowDiagnostic(f.run.id),operations:f.store.controlStatus(f.run.id).operations})); assert.equal(f.state.pr.title, 'Human review title'); assert.equal(f.branchSha(), f.state.report.commitSha);
+  runGit(f.cwd, ['merge-base', '--is-ancestor', firstSha, f.branchSha()]);
   assert.equal(f.store.managedProjectionDiagnostics(f.run.id).length, 0);
   assert.equal(f.store.get('operation', f.op.operationId).state, 'running');
   assert.equal(f.store.workflowDiagnostic(f.run.id), null);
